@@ -1,0 +1,15 @@
+{
+  "name": "tengan-gto-engine",
+  "version": "0.1.0",
+  "description": "From-scratch Discounted-CFR GTO engine (TypeScript) for the Tengan poker HUD. Algorithm modeled on bupticybee/TexasSolver.",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=iife --outfile=../src/engine.bundle.js",
+    "test": "tsx test/run.ts"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

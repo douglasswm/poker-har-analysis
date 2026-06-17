@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Tengan Poker HUD",
+  "version": "0.1.0",
+  "description": "Passive, read-only viewer for Stake Poker game websocket frames. Captures the 'front' game socket and shows raw + decoded logs in an in-page overlay.",
+  "icons": {},
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.stake.com/*",
+        "*://*.skp223817.org/*"
+      ],
+      "js": ["src/hook.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://*.stake.com/*",
+        "*://*.skp223817.org/*"
+      ],
+      "js": ["src/engine.bundle.js", "src/parser.js", "src/bridge.js"],
+      "css": ["src/overlay.css"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

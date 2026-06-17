@@ -1,0 +1,12 @@
+# Raw capture contains LIVE auth tokens — never commit it.
+poker.har
+*.raw.har
+
+# Use poker.redacted.har as the shared test fixture instead.
+
+# Node / build
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
