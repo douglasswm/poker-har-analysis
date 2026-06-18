@@ -111,6 +111,12 @@
 }
 .tengan-adv-head { font-size: 15px; font-weight: 700; color: #6ee7a8; }
 .tengan-src { font-size: 10px; font-weight: 500; color: #7c8c98; }
+.tg-unit {
+  float: right; cursor: pointer; user-select: none;
+  border: 1px solid #2c3a48; border-radius: 6px; overflow: hidden; font-size: 10px; font-weight: 700;
+}
+.tg-unit span { display: inline-block; padding: 1px 7px; color: #7d8c99; background: #131c25; }
+.tg-unit span.on { background: #2ecc8f; color: #06231a; }
 .tengan-adv-detail { color: #aebecb; margin: 4px 0; }
 .tengan-acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
 .tengan-act {
@@ -118,42 +124,186 @@
   padding: 2px 9px; color: #cdebd9;
 }
 .tengan-act b { color: #fff; }
+
+/* GTO action distribution bar (big % blocks, GTO-Wizard style) */
+.tg-actbar { display: flex; gap: 2px; margin: 8px 0 7px; height: 48px; border-radius: 8px; overflow: hidden; }
+.tg-actseg {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-width: 30px; color: #fff; overflow: hidden; transition: flex-grow .2s;
+}
+.tg-segpct { font-size: 15px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.tg-seglabel { font-size: 9px; font-weight: 600; opacity: .9; margin-top: 3px; text-transform: capitalize; white-space: nowrap; }
+.tg-actseg.agg { background: #e35d57; }
+.tg-actseg.allin { background: #a82c27; }
+.tg-actseg.call { background: #54b27a; }
+.tg-actseg.check { background: #3fae9f; }
+.tg-actseg.fold { background: #5a8fd6; }
+
+/* GTO strategy graph (action-frequency bars) */
+.tg-graph { margin: 7px 0 4px; display: flex; flex-direction: column; gap: 4px; }
+.tg-gbar { display: flex; align-items: center; gap: 7px; font-size: 10.5px; }
+.tg-glabel { width: 92px; flex-shrink: 0; color: #cfe0ec; text-align: right; text-transform: capitalize; }
+.tg-gtrack { flex: 1; height: 11px; background: #131c25; border-radius: 6px; overflow: hidden; }
+.tg-gfill { display: block; height: 100%; border-radius: 6px; background: #4a5663; transition: width .2s; }
+.tg-gfill.agg { background: #e35d57; }
+.tg-gfill.call { background: #54b27a; }
+.tg-gfill.check { background: #3fae9f; }
+.tg-gfill.fold { background: #5a8fd6; }
+.tg-gfill.allin { background: #a82c27; }
+.tg-gpct { width: 34px; flex-shrink: 0; text-align: right; color: #aebecb; font-variant-numeric: tabular-nums; }
+/* Preflop range matrix (13x13) */
+.tg-rangehdr { color: #9aa9b7; font-size: 10.5px; margin: 2px 0 4px; text-transform: capitalize; }
+.tg-grid { display: grid; grid-template-columns: repeat(13, 1fr); gap: 1px; background: #0c141d; padding: 1px; border-radius: 4px; }
+.tg-gcell { position: relative; aspect-ratio: 1 / 1; overflow: hidden; background: #39434f; border-radius: 1px; }
+.tg-gcell.fold0 { background: #2f3742; }
+.tg-gcell.hero { overflow: visible; z-index: 2; box-shadow: 0 0 0 2px #ffd84d, 0 0 5px 1px rgba(255,216,77,.6); border-radius: 2px; }
+.tg-gcell.hero .tg-gcode { color: #fff; font-weight: 800; }
+.tg-gcellbg { position: absolute; inset: 0; display: flex; }
+.tg-gcellbg span { display: block; height: 100%; }
+.tg-gcode {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 8px; font-weight: 700; color: #f3f6f9; text-shadow: 0 1px 1px rgba(0,0,0,.55); letter-spacing: -.3px;
+}
+.tg-gc-allin { background: #c0392b; }
+.tg-gc-raise { background: #e07b39; }
+.tg-gc-call  { background: #54b27a; }
+.tg-gc-check { background: #3fae9f; }
+.tg-gc-fold  { background: #5a8fd6; }
+.tg-rangelegend { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 2px; font-size: 10px; color: #aebecb; }
+.tg-lg { display: inline-flex; align-items: center; }
+.tg-lgdot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+.tg-lg b { color: #e8eef4; font-weight: 700; margin-left: 3px; }
 .tengan-mathrow { color: #8fb0c4; margin-top: 4px; font-size: 10.5px; }
 .tengan-note { color: #67768a; font-style: italic; margin-top: 4px; font-size: 10px; }
 
-/* ---- Hand summary ---- */
-.tengan-hand-top, .tengan-hand-mid {
-  display: flex; gap: 14px; margin-bottom: 6px; color: #aebecb;
+/* ---- Poker table ---- */
+.tg-tablehdr {
+  display: flex; justify-content: space-between; color: #9aa9b7;
+  font-size: 11px; margin-bottom: 4px;
 }
-.tengan-hand-top span:nth-child(2) { color: #7cc7ff; }
-.tengan-hand-top span:nth-child(3) { text-transform: capitalize; color: #9aa9b7; }
-.tengan-hand-mid b { color: #fff; }
-.tengan-seats { width: 100%; border-collapse: collapse; margin-top: 2px; }
-.tengan-seats th {
-  text-align: left; color: #67768a; font-weight: 600;
-  padding: 4px 6px; border-bottom: 1px solid #243240; font-size: 10.5px;
+.tg-tablehdr .tg-street { text-transform: capitalize; color: #7cc7ff; }
+.tg-poker-table { position: relative; width: 100%; height: 252px; margin-bottom: 4px; }
+.tg-felt {
+  position: absolute; top: 15%; left: 7%; width: 86%; height: 70%;
+  background: #123a2b; border-radius: 50%;
+  box-shadow: inset 0 0 0 5px #0d2c20, inset 0 0 0 6px #1d5d44;
 }
-.tengan-seats td { padding: 4px 6px; border-bottom: 1px solid #18222b; }
-.tengan-seats td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.tengan-seats tr.fold { opacity: 0.4; }
+.tg-center {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 62%; text-align: center;
+}
+.tg-board2 { display: flex; gap: 3px; justify-content: center; flex-wrap: wrap; }
+.tg-board2.empty { color: #6c9a86; font-size: 11px; font-style: italic; }
+.tg-pot2 { margin-top: 5px; color: #cfe8da; font-size: 11px; font-weight: 600; }
+.tg-card2 {
+  display: inline-block; min-width: 17px; padding: 1px 3px; border-radius: 3px;
+  background: #f4f6f8; font-weight: 700; font-size: 10px; text-align: center; line-height: 1.35;
+}
+.tg-card2.red { color: #d83a4a; }
+.tg-card2.blk { color: #1a2230; }
+.tg-board2 .tg-card2 { min-width: 20px; font-size: 12px; padding: 2px 4px; }
 
-/* ---- Action feed ---- */
+.tg-seat {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 82px; background: #19222c; border: 1px solid #2a3744; border-radius: 8px;
+  padding: 4px; text-align: center; font-size: 10px;
+}
+.tg-seat.hero { border-color: #2ecc8f; box-shadow: 0 0 0 1px rgba(46, 204, 143, 0.45); }
+.tg-seat.win { border-color: #d4b13a; box-shadow: 0 0 0 1px rgba(212, 177, 58, 0.55); background: #20210f; }
+.tg-seat.fold { opacity: 0.4; }
+.tg-tags { position: absolute; top: -8px; left: 50%; transform: translateX(-50%); display: flex; gap: 3px; }
+.tg-tag { font-size: 8px; font-weight: 800; border-radius: 4px; padding: 0 4px; letter-spacing: 0.3px; }
+.tg-tag.you { background: #2ecc8f; color: #06231a; }
+.tg-tag.win { background: #d4b13a; color: #2a2400; }
+.tg-srow1 { display: flex; align-items: center; justify-content: center; min-height: 11px; }
+.tg-spos {
+  background: #243240; color: #9fc4e0; border-radius: 4px;
+  padding: 0 4px; font-size: 9px; font-weight: 700;
+}
+.tg-sname {
+  color: #eef4f9; font-weight: 600; font-size: 10px; margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tg-sstack { color: #9aa9b7; font-variant-numeric: tabular-nums; font-size: 10px; }
+.tg-sact { font-size: 9px; margin-top: 1px; }
+.tg-sact.fold { color: #8190a0; }
+.tg-sact.check { color: #9aa9b7; }
+.tg-sact.call { color: #59c2ff; }
+.tg-sact.agg { color: #ffb454; font-weight: 700; }
+.tg-scards { display: flex; gap: 2px; justify-content: center; margin-bottom: 2px; }
+.tg-bet {
+  position: absolute; bottom: -9px; left: 50%; transform: translateX(-50%);
+  background: #3a2e12; color: #ffcf6e; border: 1px solid #6a531f;
+  border-radius: 8px; padding: 0 6px; font-size: 9px; font-weight: 700; white-space: nowrap;
+}
+
+/* ---- Winner / showdown ---- */
+.tengan-result {
+  margin: 6px 0 4px; padding: 6px 9px;
+  background: #1c1c0e; border: 1px solid #4a4520; border-radius: 8px;
+  color: #f0e6b8; font-size: 12px;
+}
+.tengan-result b { color: #fff; }
+.tg-win {
+  background: #d4b13a; color: #2a2400; font-weight: 700; font-size: 10px;
+  border-radius: 5px; padding: 1px 6px; margin-right: 4px;
+}
+.tengan-shown { margin: 2px 0 4px; color: #9aa9b7; font-size: 11px; }
+.tengan-shown b { color: #e6eef4; }
+
+/* ---- Players tab ---- */
+.tg-legend {
+  background: #0d141b; border: 1px solid #1c2733; border-radius: 8px;
+  padding: 7px 9px; margin-bottom: 9px; font-size: 10.5px;
+}
+.tg-legend > div { display: flex; gap: 8px; padding: 2px 0; color: #9aa9b7; }
+.tg-legend b { color: #cfe0ec; min-width: 64px; flex-shrink: 0; }
+.tg-legend span { color: #7d8c99; }
+.tg-legend-hint { color: #67768a; font-style: italic; margin-top: 3px; border-top: 1px solid #1c2733; padding-top: 4px; }
+.tengan-pstats { width: 100%; border-collapse: collapse; }
+.tengan-pstats th {
+  text-align: right; color: #67768a; font-weight: 600; font-size: 10.5px;
+  padding: 4px 6px; border-bottom: 1px solid #243240;
+}
+.tengan-pstats th:first-child, .tengan-pstats td:first-child { text-align: left; }
+.tengan-pstats td { padding: 4px 6px; border-bottom: 1px solid #18222b; }
+.tengan-pstats td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tg-prow { cursor: pointer; }
+.tg-prow:hover { background: #16202b; }
+.tg-prow.exp { background: #182230; }
+.tg-n { color: #67768a; font-size: 10px; }
+.tg-hist td { background: #0c1218; padding: 6px 10px !important; }
+.tg-hh { color: #aebecb; padding: 2px 0; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; }
+.tg-hh b { color: #7cc7ff; }
+
+/* ---- Action feed (columns by street) ---- */
 .tengan-feed-title {
   color: #67768a; font-weight: 600; font-size: 10.5px;
   text-transform: uppercase; letter-spacing: 0.4px;
-  margin: 12px 0 4px; padding-top: 10px; border-top: 1px solid #1c2733;
+  margin: 12px 0 5px; padding-top: 10px; border-top: 1px solid #1c2733;
 }
-.tengan-street {
-  color: #7cc7ff; font-weight: 700; text-transform: capitalize;
-  margin: 8px 0 3px; font-size: 11px; border-bottom: 1px solid #1c2733; padding-bottom: 2px;
+#tengan-feed { display: flex; gap: 5px; align-items: flex-start; }
+.tg-fcol {
+  flex: 1; min-width: 0; background: #0d141b;
+  border: 1px solid #1c2733; border-radius: 7px; padding: 4px 5px;
 }
-.tengan-street:first-child { margin-top: 0; }
-.tengan-action { display: flex; justify-content: space-between; gap: 10px; padding: 3px 2px; }
-.tengan-action + .tengan-action { border-top: 1px solid #131c25; }
-.tengan-action .who { color: #c3cfd9; }
-.tengan-action .act { color: #aebecb; }
-.tengan-action.agg .act { color: #ffb454; font-weight: 600; }
-.tengan-action.fold { opacity: 0.5; }
+.tg-fstreet {
+  color: #7cc7ff; font-weight: 700; text-transform: capitalize; font-size: 10px;
+  text-align: center; margin-bottom: 3px; padding-bottom: 2px; border-bottom: 1px solid #1c2733;
+}
+.tg-frow { padding: 2px 0; border-top: 1px solid #131c25; line-height: 1.25; }
+.tg-frow:first-of-type { border-top: none; }
+.tg-fpos { color: #6fb0d8; font-weight: 700; font-size: 9px; margin-right: 3px; }
+.tg-fname {
+  color: #c3cfd9; font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; max-width: 100%;
+}
+.tg-fact { display: block; font-size: 10px; }
+.tg-fact.fold { color: #8190a0; }
+.tg-fact.check { color: #9aa9b7; }
+.tg-fact.call { color: #59c2ff; }
+.tg-fact.agg { color: #ffb454; font-weight: 700; }
+.tg-fempty { color: #3a4753; text-align: center; padding: 4px 0; }
 
 /* ---- Log ---- */
 #tengan-logbar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }

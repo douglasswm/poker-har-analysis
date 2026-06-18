@@ -64,8 +64,56 @@ const COMBOS5_OF_7 = (() => {
   return res; // 21 combinations
 })();
 
+export const CATEGORY_NAMES = [
+  "High Card", "Pair", "Two Pair", "Three of a Kind", "Straight",
+  "Flush", "Full House", "Four of a Kind", "Straight Flush"
+];
+
+// k-of-n index combinations (cached) for evaluating 5–7 card hands.
+const _combosCache: Record<string, number[][]> = {};
+function combos5(n: number): number[][] {
+  const key = n + "c5";
+  if (_combosCache[key]) return _combosCache[key];
+  const res: number[][] = [];
+  for (let a = 0; a < n; a++)
+    for (let b = a + 1; b < n; b++)
+      for (let c = b + 1; c < n; c++)
+        for (let d = c + 1; d < n; d++)
+          for (let e = d + 1; e < n; e++) res.push([a, b, c, d, e]);
+  _combosCache[key] = res;
+  return res;
+}
+
+// Best 5-card score from 5, 6, or 7 cards.
+function bestScore(cards: number[]): number {
+  if (cards.length < 5) return -1;
+  const ranks = cards.map(rankOf);
+  const suits = cards.map(suitOf);
+  let best = -1;
+  for (const idx of combos5(cards.length)) {
+    const v = score5(
+      [ranks[idx[0]], ranks[idx[1]], ranks[idx[2]], ranks[idx[3]], ranks[idx[4]]],
+      [suits[idx[0]], suits[idx[1]], suits[idx[2]], suits[idx[3]], suits[idx[4]]]
+    );
+    if (v > best) best = v;
+  }
+  return best;
+}
+
+// Category (0=high card .. 8=straight flush) + name for a 5–7 card hand
+// (hole + flop/turn/river board). Returns cat -1 if fewer than 5 cards.
+export function handCategory(cards: number[]): { cat: number; name: string } {
+  if (!cards || cards.length < 5) return { cat: -1, name: "?" };
+  const cat = Math.floor(bestScore(cards) / Math.pow(16, 5));
+  return { cat, name: CATEGORY_NAMES[cat] };
+}
+
 // Evaluate exactly 7 card ids -> comparable strength.
 export function evaluate7(cards: number[]): number {
+  return evaluate7Best(cards);
+}
+
+function evaluate7Best(cards: number[]): number {
   const ranks = cards.map(rankOf);
   const suits = cards.map(suitOf);
   let best = -1;

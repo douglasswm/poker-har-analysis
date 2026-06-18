@@ -43,18 +43,20 @@ export function buildSpot(
   const board = parseCardList(d.c || "");
   const bb = gs.bbv || 2;
 
-  // Hero seat: explicit override, else the seat exposing its own cards (dc).
+  // Hero seat: explicit override, else the seat exposing its own cards. The
+  // local player's cards arrive in `dc` (older builds) or `d` (newer builds);
+  // opponents' `d` is masked "-1;-1" and parses to <2 valid cards.
+  const seatCards = (s: any): number[] => (s ? parseCardList(s.dc || s.d || "") : []);
   let heroSeat = -1, heroCards: number[] = [];
   if (opts && opts.heroSeat != null && seats[opts.heroSeat] && seats[opts.heroSeat].dn) {
     heroSeat = opts.heroSeat;
-    const s = seats[heroSeat];
     heroCards = (opts.heroCards && opts.heroCards.length === 2)
       ? opts.heroCards.slice()
-      : (s.dc ? parseCardList(s.dc) : []);
+      : seatCards(seats[heroSeat]);
   } else {
     for (let i = 0; i < seats.length; i++) {
-      const s = seats[i];
-      if (s && s.dc) { heroSeat = i; heroCards = parseCardList(s.dc); break; }
+      const ids = seatCards(seats[i]);
+      if (ids.length === 2) { heroSeat = i; heroCards = ids; break; }
     }
     if (opts && opts.heroCards && opts.heroCards.length === 2) heroCards = opts.heroCards.slice();
   }
@@ -83,9 +85,10 @@ export function buildSpot(
   // Heuristic for "out of position": the player whose turn comes first
   // postflop is the one closest after the button. We approximate with the
   // hero's position label: SB/BB act earlier postflop than CO/BTN.
+  // Out of position = everyone except the two latest seats (CO, BTN), who act
+  // last postflop. Works for any table size / label set.
   const pos = positions[heroSeat] || "";
-  const earlyPost = ["SB", "BB", "UTG", "UTG+1", "MP", "HJ"]; // earlier to act postflop
-  const heroIsOOP = earlyPost.includes(pos);
+  const heroIsOOP = pos !== "CO" && pos !== "BTN";
 
   return {
     ok: heroSeat >= 0,

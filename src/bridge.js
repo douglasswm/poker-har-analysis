@@ -95,7 +95,13 @@
     bbv: 2,          // big-blind value in chip units (from GameState)
     moneyType: null, // currency money-type id (from BalancesUpdate)
     heroSel: "auto", // "auto" or a seat index (as string)
-    heroCardIds: [null, null] // manually entered hole cards when a seat has none
+    heroCardIds: [null, null], // manually entered hole cards when a seat has none
+    expandedPlayer: null,      // Players tab: which player's history is open
+    maxSeats: 9,               // table seat count (from GoToTable mp / seat array)
+    maxSeatsLocked: false,     // true once mp is known from table info
+    heroGs: null,              // latest GameState where the hero is in the hand
+    heroInfo: null,            // { seat, cardIds } captured with heroGs
+    lastAdviceKey: null        // debounce key for auto-advise
   };
 
   const RANK_LABELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
@@ -117,13 +123,41 @@
     // Update parsed hand summary from poker frames.
     if (frame.conn === "front" && frame.json) {
       const ft = frame.json.t || frame.json.type;
+      let summary = null;
       if (window.PokerParser) {
-        const summary = window.PokerParser.update(frame.json);
+        summary = window.PokerParser.update(frame.json);
         if (summary) state.hand = summary;
       }
       if (ft === "GameState" && frame.json.gameState) {
-        state.latestGs = frame.json.gameState;
-        if (frame.json.gameState.bbv) state.bbv = frame.json.gameState.bbv;
+        const gs = frame.json.gameState;
+        state.latestGs = gs;
+        if (gs.bbv) state.bbv = gs.bbv;
+        const sl = (gs.s || []).length;
+        if (!state.maxSeatsLocked && sl) state.maxSeats = sl;
+
+        // Track the frame where the hero is in the hand (for advice), and
+        // auto-advise the moment it's the hero's turn on a live street.
+        const heroS = summary && summary.seats.find(function (s) {
+          return s.isHero && s.cardIds && s.cardIds.length === 2;
+        });
+        if (heroS) {
+          state.heroGs = gs;
+          state.heroInfo = { seat: heroS.seat, cardIds: heroS.cardIds.slice() };
+          const m = gs.m || {};
+          const live = m.r >= 1 && m.r <= 4;
+          const heroToAct = live && !heroS.folded && m.ci === heroS.seat;
+          if (heroToAct) {
+            let sumBets = 0;
+            for (const s of (gs.s || [])) if (s && typeof s.b === "number") sumBets += s.b;
+            const key = gs.gi + ":" + m.r + ":" + sumBets;
+            if (key !== state.lastAdviceKey) { state.lastAdviceKey = key; runAdvice(true); }
+          }
+        }
+      }
+      // Authoritative table seat count (max players) when joining/viewing a table.
+      const info = frame.json.info || frame.json;
+      if ((ft === "GoToTable" || ft === "SelectTable") && info && info.mp) {
+        state.maxSeats = info.mp; state.maxSeatsLocked = true;
       }
       if (ft === "BalancesUpdate" && frame.json.cashInfoList && frame.json.cashInfoList[0]) {
         state.moneyType = frame.json.cashInfoList[0].mt;
@@ -151,11 +185,13 @@
         <span id="tengan-title">Tengan</span>
         <span id="tengan-spacer"></span>
         <button class="tg-icon accent" id="tengan-advise" title="GTO advice">⚡</button>
+        <button class="tg-icon" id="tengan-reset" title="Reset stats &amp; hand records">↺</button>
         <button class="tg-icon" id="tengan-min" title="Minimize">▁</button>
         <button class="tg-icon" id="tengan-close" title="Close HUD">✕</button>
       </div>
       <div id="tengan-tabs">
         <button class="tg-tab active" data-tab="table">Table</button>
+        <button class="tg-tab" data-tab="players">Players</button>
         <button class="tg-tab" data-tab="log">Log <span id="tengan-count">0</span></button>
       </div>
       <div id="tengan-body">
@@ -169,6 +205,11 @@
           <div id="tengan-hand"></div>
           <div class="tengan-feed-title">Action feed</div>
           <div id="tengan-feed"></div>
+          <div class="tengan-feed-title">GTO preflop range</div>
+          <div id="tengan-grid"></div>
+        </div>
+        <div class="tg-panel" data-panel="players">
+          <div id="tengan-players"></div>
         </div>
         <div class="tg-panel" data-panel="log">
           <div id="tengan-logbar">
@@ -198,12 +239,15 @@
       export: root.querySelector("#tengan-export"),
       min: root.querySelector("#tengan-min"),
       close: root.querySelector("#tengan-close"),
+      reset: root.querySelector("#tengan-reset"),
       advise: root.querySelector("#tengan-advise"),
       heroSelect: root.querySelector("#tengan-hero"),
       heroCards: root.querySelector("#tengan-herocards"),
       advice: root.querySelector("#tengan-advice"),
       hand: root.querySelector("#tengan-hand"),
       feed: root.querySelector("#tengan-feed"),
+      grid: root.querySelector("#tengan-grid"),
+      players: root.querySelector("#tengan-players"),
       log: root.querySelector("#tengan-log"),
       head: root.querySelector("#tengan-head"),
       tabs: root.querySelectorAll(".tg-tab"),
@@ -230,25 +274,18 @@
     els.advise.addEventListener("click", runAdvice);
     els.min.addEventListener("click", function () { root.classList.toggle("min"); });
     els.close.addEventListener("click", closeOverlay);
+    els.reset.addEventListener("click", function () {
+      if (!window.confirm("Reset all player stats and hand records?")) return;
+      if (window.PokerParser && window.PokerParser.resetStats) window.PokerParser.resetStats();
+      state.expandedPlayer = null;
+      renderPlayers();
+      renderHand();
+      renderFeed();
+    });
 
     els.heroSelect.addEventListener("change", function () {
       state.heroSel = els.heroSelect.value;
-      state.heroCardIds = [null, null];
       renderHeroBar();
-    });
-    // Card pickers (delegated) for seats with no visible cards.
-    els.heroCards.addEventListener("change", function (e) {
-      const t = e.target;
-      if (!t || !t.dataset || t.dataset.tgpick == null) return;
-      const slot = +t.dataset.slot;     // 0 or 1 (which hole card)
-      const kind = t.dataset.tgpick;    // "rank" or "suit"
-      const sel = els.heroCards.querySelector(`[data-slot="${slot}"][data-tgpick="rank"]`);
-      const sui = els.heroCards.querySelector(`[data-slot="${slot}"][data-tgpick="suit"]`);
-      if (sel.value !== "" && sui.value !== "") {
-        state.heroCardIds[slot] = (+sel.value) * 4 + (+sui.value);
-      } else {
-        state.heroCardIds[slot] = null;
-      }
     });
 
     els.tabs.forEach(function (tab) {
@@ -262,8 +299,10 @@
     makeDraggable(root, els.head);
     renderHeroBar();
     renderAdvice();
+    renderGrid();
     renderHand();
     renderFeed();
+    renderPlayers();
   }
 
   function closeOverlay() {
@@ -294,26 +333,16 @@
     return map;
   }
 
-  function cardPicker(slot, id) {
-    const r = id != null ? Math.floor(id / 4) : "";
-    const s = id != null ? id % 4 : "";
-    let ro = '<option value="">–</option>';
-    RANK_LABELS.forEach((lbl, i) => { ro += `<option value="${i}" ${i === r ? "selected" : ""}>${lbl}</option>`; });
-    let so = '<option value="">–</option>';
-    SUIT_LABELS.forEach((lbl, i) => { so += `<option value="${i}" ${i === s ? "selected" : ""}>${lbl}</option>`; });
-    return `<select class="tg-card" data-tgpick="rank" data-slot="${slot}">${ro}</select>` +
-           `<select class="tg-card" data-tgpick="suit" data-slot="${slot}">${so}</select>`;
-  }
-
   function renderHeroBar() {
     if (!els || !els.heroSelect) return;
     const seats = (state.hand && state.hand.seats) || [];
-    // (Re)build the dropdown, preserving the current selection.
+    // (Re)build the dropdown, preserving the current selection. Default "Auto"
+    // tracks the seat the server marks as the local player (wc/dc signal).
     const sig = seats.map((s) => s.seat + ":" + (s.position || "") + ":" + s.name).join("|");
     if (els.heroSelect.dataset.sig !== sig) {
       let opts = '<option value="auto">Auto (my seat)</option>';
       for (const s of seats) {
-        const label = (s.position ? s.position + " " : "") + s.name + (s.cards ? " ✦" : "");
+        const label = (s.position ? s.position + " " : "") + s.name + (s.isHero ? " (you)" : "");
         opts += `<option value="${s.seat}">${escapeHtml(label)}</option>`;
       }
       els.heroSelect.innerHTML = opts;
@@ -322,69 +351,73 @@
     els.heroSelect.value = state.heroSel;
     if (els.heroSelect.value !== state.heroSel) { state.heroSel = "auto"; els.heroSelect.value = "auto"; }
 
-    // Card area: show visible cards, or pickers for a seat with hidden cards.
-    // Guard rebuilds by a key so per-frame refreshes don't disturb open pickers.
+    // Card area: show the auto-detected/selected seat's cards (no manual entry).
     const selSeat = state.heroSel === "auto"
-      ? seats.find((s) => s.cards)
+      ? (seats.find((s) => s.isHero && s.cards) || seats.find((s) => s.cards))
       : seats.find((s) => String(s.seat) === String(state.heroSel));
-    const hasCards = !!(selSeat && selSeat.cards);
-    const key = state.heroSel + "|" + (selSeat ? selSeat.cards || "?" : "none") + "|" + hasCards;
+    const key = state.heroSel + "|" + (selSeat ? (selSeat.cards || "?") : "none");
     if (els.heroCards.dataset.key === key) return;
     els.heroCards.dataset.key = key;
 
-    if (state.heroSel === "auto") {
-      els.heroCards.innerHTML = selSeat
-        ? `<span class="tg-cards">${escapeHtml(selSeat.cards)}</span>`
-        : `<span class="tengan-empty">spectating</span>`;
-    } else if (hasCards) {
+    if (selSeat && selSeat.cards) {
       els.heroCards.innerHTML = `<span class="tg-cards">${escapeHtml(selSeat.cards)}</span>`;
+    } else if (state.heroSel === "auto") {
+      els.heroCards.innerHTML = `<span class="tengan-empty">not in hand</span>`;
     } else {
-      els.heroCards.innerHTML = cardPicker(0, state.heroCardIds[0]) + cardPicker(1, state.heroCardIds[1]);
+      els.heroCards.innerHTML = `<span class="tengan-empty">cards hidden</span>`;
     }
   }
 
-  // Resolve {heroSeat, heroCards} to pass to the engine. Uses the per-hand
-  // cached card ids from the parser so it works even on frames missing dc.
+  // Resolve {heroSeat, heroCards} to pass to the engine, using the per-hand
+  // cached card ids from the parser (works even on frames missing dc/d).
   function resolveHero() {
     const seats = (state.hand && state.hand.seats) || [];
     if (state.heroSel === "auto") {
-      const hero = seats.find((s) => s.cardIds && s.cardIds.length === 2);
+      const withCards = (s) => s.cardIds && s.cardIds.length === 2;
+      const hero = seats.find((s) => s.isHero && withCards(s)) || seats.find(withCards);
       return hero ? { heroSeat: hero.seat, heroCards: hero.cardIds.slice() } : {};
     }
     const seat = parseInt(state.heroSel, 10);
     const out = { heroSeat: seat };
     const sel = seats.find((s) => s.seat === seat);
-    if (sel && sel.cardIds && sel.cardIds.length === 2) {
-      out.heroCards = sel.cardIds.slice();           // visible/cached cards
-    } else {
-      const a = state.heroCardIds[0], b = state.heroCardIds[1];
-      if (a != null && b != null && a !== b) out.heroCards = [a, b]; // manual
-    }
+    if (sel && sel.cardIds && sel.cardIds.length === 2) out.heroCards = sel.cardIds.slice();
     return out;
   }
 
-  function runAdvice() {
+  // Run the advisor. When `auto` it runs silently (no "Solving…" flicker) for
+  // the hero's current decision; manual (⚡) advises the hero's active hand or,
+  // if none, the latest frame.
+  function runAdvice(auto) {
     if (!els) return;
     if (!window.TenganEngine) {
-      els.advice.innerHTML = '<div class="tengan-empty">Engine bundle not loaded.</div>';
+      if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Engine bundle not loaded.</div>';
       return;
     }
-    if (!state.latestGs) {
-      els.advice.innerHTML = '<div class="tengan-empty">No GameState captured yet — sit at a table.</div>';
+    // Prefer the frame where the hero is actually in the hand.
+    const useHeroGs = (state.heroSel === "auto") && state.heroGs;
+    const gs = useHeroGs ? state.heroGs : state.latestGs;
+    if (!gs) {
+      if (!auto) els.advice.innerHTML = '<div class="tengan-empty">No hand captured yet — sit at a table.</div>';
       return;
     }
-    els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
-    // Defer so "Solving…" paints before a heavy river solve runs on this thread.
+    // Hero override: prefer the captured hero info for the hero-active frame.
+    let opts = { iterations: 350 };
+    if (useHeroGs && state.heroInfo) {
+      opts.heroSeat = state.heroInfo.seat;
+      opts.heroCards = state.heroInfo.cardIds.slice();
+    } else {
+      opts = Object.assign(opts, resolveHero());
+    }
+    if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
     setTimeout(function () {
       try {
-        const opts = Object.assign({ iterations: 350 }, resolveHero());
-        state.advice = window.TenganEngine.recommend(state.latestGs, positionsMap(), opts);
+        state.advice = window.TenganEngine.recommend(gs, positionsMap(), opts);
         renderAdvice();
       } catch (e) {
-        els.advice.innerHTML = '<div class="tengan-empty">Engine error: ' +
+        if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Engine error: ' +
           escapeHtml(String((e && e.message) || e)) + "</div>";
       }
-    }, 30);
+    }, auto ? 0 : 30);
   }
 
   function renderAdvice() {
@@ -395,26 +428,179 @@
       return;
     }
     const r = out.recommendation;
+    const bb = r.bb || state.bbv || 2;
+
+    // Headline: build from the structured top action (formatted by unit), else
+    // fall back to the text headline (math / messages).
+    let headline;
+    if (r.top) {
+      headline = fmtAction(r.top, bb).toUpperCase();
+      // Show the frequency whenever the strategy is mixed (more than one action).
+      var mixed = r.actions && r.actions.filter(function (a) { return (a.freq || 0) > 0.004; }).length > 1;
+      if (mixed || r.source === "solver") headline += " (" + Math.round((r.top.freq || 0) * 100) + "%)";
+    } else {
+      headline = r.headline || "—";
+    }
+
+    // GTO strategy: a prominent segmented action bar (big % blocks, GTO-Wizard
+    // style) plus a labelled row per action showing its size and frequency.
     let actionsHtml = "";
     if (r.actions && r.actions.length) {
-      actionsHtml = '<div class="tengan-acts">' + r.actions.map(function (a) {
-        return '<span class="tengan-act"><b>' + escapeHtml(a.label) + "</b> " +
-          (a.freq * 100).toFixed(0) + "%</span>";
+      const bars = r.actions.filter(function (b) { return (b.freq || 0) > 0.004; })
+        .sort(function (a, b) { return b.freq - a.freq; });
+
+      // Segmented distribution bar: each block grows with its frequency.
+      const segs = bars.map(function (a) {
+        const pct = Math.round(a.freq * 100);
+        const cls = gActClass(fmtAction(a, bb));
+        const verb = a.allin ? "All-in" : a.kind;
+        const showLabel = a.freq >= 0.16;
+        return '<span class="tg-actseg ' + cls + '" style="flex-grow:' + Math.max(a.freq, 0.001) +
+          '" title="' + escapeHtml(fmtAction(a, bb)) + ' ' + pct + '%">' +
+          '<span class="tg-segpct">' + pct + '%</span>' +
+          (showLabel ? '<span class="tg-seglabel">' + escapeHtml(verb) + '</span>' : '') +
+          '</span>';
+      }).join("");
+      const actbar = '<div class="tg-actbar">' + segs + '</div>';
+
+      // Detailed rows (action + size + frequency).
+      const rows = '<div class="tg-graph">' + bars.map(function (a) {
+        const pct = Math.round(a.freq * 100);
+        const label = fmtAction(a, bb);
+        return '<div class="tg-gbar"><span class="tg-glabel">' + escapeHtml(label) + "</span>" +
+          '<span class="tg-gtrack"><span class="tg-gfill ' + gActClass(label) +
+          '" style="width:' + pct + '%"></span></span>' +
+          '<span class="tg-gpct">' + pct + "%</span></div>";
       }).join("") + "</div>";
+
+      actionsHtml = actbar + rows;
     }
-    let mathHtml = "";
-    if (r.math) {
-      mathHtml = '<div class="tengan-mathrow">pot odds ' + r.math.potOddsPct +
-        "% · MDF " + r.math.mdfPct + "% · bluff " + r.math.bluffPct +
-        "% · SPR " + r.math.spr + "</div>";
-    }
-    const expl = r.exploitabilityPct != null ? " · exploit " + r.exploitabilityPct + "%" : "";
+
+    // Clean panel: action headline + short reason + strategy graph only.
+    // (Pot-odds/MDF/SPR math and verbose notes are intentionally hidden.)
+    const toggle = '<span class="tg-unit" id="tg-unit-toggle" title="Toggle $ / big blinds">' +
+      '<span class="' + (state.unit === "usd" ? "on" : "") + '">$</span>' +
+      '<span class="' + (state.unit === "bb" ? "on" : "") + '">bb</span></span>';
+
     els.advice.innerHTML =
-      '<div class="tengan-adv-head">' + escapeHtml(r.headline) +
-      ' <span class="tengan-src">[' + escapeHtml(r.source) + expl + "]</span></div>" +
-      '<div class="tengan-adv-detail">' + escapeHtml(r.detail) + "</div>" +
-      actionsHtml + mathHtml +
-      (r.note ? '<div class="tengan-note">' + escapeHtml(r.note) + "</div>" : "");
+      '<div class="tengan-adv-head">' + escapeHtml(headline) + toggle + "</div>" +
+      (r.detail ? '<div class="tengan-adv-detail">' + escapeHtml(r.detail) + "</div>" : "") +
+      actionsHtml;
+
+    const tg = els.advice.querySelector("#tg-unit-toggle");
+    if (tg) tg.addEventListener("click", function () {
+      state.unit = state.unit === "usd" ? "bb" : "usd";
+      renderAdvice();
+    });
+
+    renderGrid();
+  }
+
+  // Hand code ("AKs", "TT", "72o") from two card ids (id = rank*4 + suit).
+  function handCodeJS(a, b) {
+    const RK = "23456789TJQKA";
+    let r1 = a >> 2, r2 = b >> 2;
+    const suited = (a & 3) === (b & 3);
+    if (r1 < r2) { const t = r1; r1 = r2; r2 = t; }
+    if (r1 === r2) return RK[r1] + RK[r2];
+    return RK[r1] + RK[r2] + (suited ? "s" : "o");
+  }
+
+  // Colour class for a grid segment / legend dot.
+  function gridCls(action) {
+    if (action === "allin") return "allin";
+    if (action === "raise") return "raise";
+    if (action === "call") return "call";
+    if (action === "check") return "check";
+    return "fold";
+  }
+
+  // 13x13 preflop strategy matrix for the current spot's position/stack.
+  function renderGrid() {
+    if (!els || !els.grid) return;
+    const out = state.advice;
+    if (!out || !out.spot || !window.TenganEngine || !window.TenganEngine.preflopGrid) {
+      els.grid.innerHTML = '<div class="tengan-empty">Range appears once a hand is read.</div>';
+      return;
+    }
+    const sp = out.spot;
+    const posLabel = sp.heroPosition || "BTN";
+    const facing = (sp.street === "preflop" && sp.toCall > sp.bb) ? "raise" : "open";
+    const stackBB = sp.bb > 0 ? sp.effStack / sp.bb : 100;
+    let g;
+    try { g = window.TenganEngine.preflopGrid(posLabel, facing, stackBB); }
+    catch (e) { els.grid.innerHTML = ""; return; }
+
+    // Hero's current hand → highlight that cell in the grid.
+    let heroCode = null;
+    if (sp.heroCards && sp.heroCards.length === 2) heroCode = handCodeJS(sp.heroCards[0], sp.heroCards[1]);
+
+    const order = ["allin", "raise", "call", "check", "fold"];
+    let cellsHtml = "";
+    g.cells.forEach(function (cell) {
+      const pureFold = cell.options.length === 1 && cell.options[0].action === "fold";
+      const isHero = heroCode && cell.code === heroCode;
+      let segs = "";
+      if (!pureFold) {
+        order.forEach(function (act) {
+          const o = cell.options.find(function (x) { return x.action === act; });
+          if (o && o.freq > 0.004) segs += '<span class="tg-gc-' + gridCls(act) + '" style="flex-grow:' + o.freq + '"></span>';
+        });
+      }
+      cellsHtml += '<div class="tg-gcell' + (pureFold ? " fold0" : "") + (isHero ? " hero" : "") + '" title="' + cell.code + (isHero ? " (your hand)" : "") + '">' +
+        '<span class="tg-gcellbg">' + segs + "</span>" +
+        '<span class="tg-gcode">' + cell.code + "</span></div>";
+    });
+
+    const L = g.legend;
+    function leg(act, label, pct) {
+      return '<span class="tg-lg"><i class="tg-lgdot tg-gc-' + gridCls(act) + '"></i>' + label + " <b>" + pct.toFixed(2) + "%</b></span>";
+    }
+    const legend = '<div class="tg-rangelegend">' +
+      (L.allin > 0.004 ? leg("allin", "All in", L.allin) : "") +
+      leg("raise", "Raise", L.raise) +
+      (L.call > 0.004 ? leg("call", "Call", L.call) : "") +
+      (L.check > 0.004 ? leg("check", "Check", L.check) : "") +
+      leg("fold", "Fold", L.fold) + "</div>";
+
+    const hdr = '<div class="tg-rangehdr">' + escapeHtml(posLabel) + " · " +
+      (facing === "raise" ? "vs raise" : "RFI") + " · " + Math.round(stackBB) + "bb</div>";
+
+    els.grid.innerHTML = hdr + '<div class="tg-grid">' + cellsHtml + "</div>" + legend;
+  }
+
+  // Format an action's verb + size in the current unit ($ or bb).
+  function fmtAction(a, bb) {
+    if (!a) return "—";
+    if (a.allin) return "all-in";
+    if (a.kind === "fold") return "fold";
+    if (a.kind === "check") return "check";
+    if (a.kind === "call") return "call";
+    if (a.kind === "bet" || a.kind === "raise") {
+      let size = "";
+      if (a.sizeBB != null) {
+        size = state.unit === "bb" ? a.sizeBB + "bb" : "$" + (a.sizeBB * bb / 100).toFixed(2);
+      } else if (a.amount != null) {
+        size = state.unit === "bb" ? (a.amount / bb).toFixed(1) + "bb" : "$" + (a.amount / 100).toFixed(2);
+      }
+      // Flop/turn sizes also carry a pot fraction (Stake's 33/50/75/pot buttons).
+      let pf = "";
+      if (a.potFrac != null) pf = (a.potFrac >= 1 ? "pot" : Math.round(a.potFrac * 100) + "%") + " ";
+      const body = (pf + size).trim();
+      return body ? a.kind + " " + body : a.kind;
+    }
+    return a.kind;
+  }
+
+  // Colour class for a strategy-graph bar based on its action label.
+  function gActClass(label) {
+    label = (label || "").toLowerCase();
+    if (label.indexOf("fold") >= 0) return "fold";
+    if (label.indexOf("all-in") >= 0) return "allin";
+    if (label.indexOf("check") >= 0) return "check";
+    if (label.indexOf("call") >= 0) return "call";
+    if (label.indexOf("bet") >= 0 || label.indexOf("raise") >= 0) return "agg";
+    return "";
   }
 
   function passesFilter(frame) {
@@ -433,6 +619,7 @@
     renderHeroBar();
     renderHand();
     renderFeed();
+    renderPlayers();
     if (!passesFilter(frame)) return;
 
     const row = document.createElement("div");
@@ -477,6 +664,36 @@
     renderFeed();
   }
 
+  // Seat positions are generated for the table's actual seat count (6-max,
+  // 9-max, etc.). Index i is placed around the oval matching Stake's layout:
+  // the middle index sits at bottom-center, and increasing index goes
+  // counter-clockwise (verified against a live 9-max table).
+  const _layoutCache = {};
+  function seatLayout(n) {
+    n = Math.max(2, Math.min(10, n || 9));
+    if (_layoutCache[n]) return _layoutCache[n];
+    const cx = 50, cy = 49, rx = 40, ry = 39, anchor = Math.floor(n / 2);
+    const pos = [];
+    for (let i = 0; i < n; i++) {
+      const slot = (anchor - i + n) % n;
+      const th = (slot * 2 * Math.PI) / n;
+      pos[i] = {
+        l: (cx + rx * Math.sin(th)).toFixed(1) + "%",
+        t: (cy + ry * Math.cos(th)).toFixed(1) + "%"
+      };
+    }
+    _layoutCache[n] = pos;
+    return pos;
+  }
+
+  function cardTokens(cardStr) {
+    if (!cardStr) return "";
+    return cardStr.split(" ").filter(Boolean).map(function (c) {
+      const red = c.indexOf("♥") >= 0 || c.indexOf("♦") >= 0;
+      return '<span class="tg-card2 ' + (red ? "red" : "blk") + '">' + escapeHtml(c) + "</span>";
+    }).join("");
+  }
+
   function renderHand() {
     if (!els) return;
     const h = state.hand;
@@ -484,33 +701,126 @@
       els.hand.innerHTML = `<div class="tengan-empty">Waiting for a hand…</div>`;
       return;
     }
-    const board = h.board && h.board.length ? h.board.join(" ") : "—";
-    let seatRows = "";
+
+    const winners = new Set(
+      (h.result && h.result.winners ? h.result.winners : []).map((w) => w.name)
+    );
+
+    // Seat count: prefer the table's max-players (mp); else the seat-array size.
+    const n = state.maxSeats || h.maxSeats || 9;
+    const layout = seatLayout(n);
+
+    let seatsHtml = "";
     for (const s of h.seats) {
-      seatRows += `<tr class="${s.folded ? "fold" : ""}">
-        <td>${escapeHtml(s.position || "")}</td>
-        <td>${escapeHtml(s.name || "")}</td>
-        <td class="num">${s.stack != null ? fmtMoney(s.stack) : ""}</td>
-        <td class="num">${s.bet ? fmtMoney(s.bet) : ""}</td>
-        <td>${escapeHtml(s.lastAction || "")}</td>
-        <td>${escapeHtml(s.cards || "")}</td>
-      </tr>`;
+      const pos = layout[s.seat] || { t: "50%", l: "50%" };
+      const isWin = winners.has(s.name);
+      const cls = (s.folded ? "fold " : "") + (s.isHero ? "hero " : "") + (isWin ? "win" : "");
+      const cardsHtml = s.cards ? '<div class="tg-scards">' + cardTokens(s.cards) + "</div>" : "";
+      const betHtml = s.bet ? '<div class="tg-bet">' + fmtMoney(s.bet) + "</div>" : "";
+      const tags =
+        (s.isHero ? '<span class="tg-tag you">YOU</span>' : "") +
+        (isWin ? '<span class="tg-tag win">WIN</span>' : "");
+      seatsHtml +=
+        '<div class="tg-seat ' + cls.trim() + '" style="top:' + pos.t + ";left:" + pos.l + '">' +
+          (tags ? '<div class="tg-tags">' + tags + "</div>" : "") +
+          cardsHtml +
+          '<div class="tg-sbody">' +
+            '<div class="tg-srow1">' +
+              (s.position ? '<span class="tg-spos">' + escapeHtml(s.position) + "</span>" : "") +
+            "</div>" +
+            '<div class="tg-sname">' + escapeHtml(s.name || "") + "</div>" +
+            '<div class="tg-sstack">' + (s.stack != null ? fmtMoney(s.stack) : "") + "</div>" +
+            (s.lastAction ? '<div class="tg-sact ' + actClass(s.lastAction) + '">' + escapeHtml(s.lastAction) + "</div>" : "") +
+          "</div>" +
+          betHtml +
+        "</div>";
     }
-    els.hand.innerHTML = `
-      <div class="tengan-hand-top">
-        <span>Table ${escapeHtml(String(h.tableId))}</span>
-        <span>Hand ${escapeHtml(String(h.handId))}</span>
-        <span>${escapeHtml(h.street || "")}</span>
-      </div>
-      <div class="tengan-hand-mid">
-        <span>Board: <b>${escapeHtml(board)}</b></span>
-        <span>Pot: <b>${h.pot != null ? fmtMoney(h.pot) : "—"}</b></span>
-      </div>
-      <table class="tengan-seats">
-        <thead><tr><th>Pos</th><th>Player</th><th>Stack</th><th>Bet</th><th>Last</th><th>Cards</th></tr></thead>
-        <tbody>${seatRows}</tbody>
-      </table>
-    `;
+
+    const boardHtml = (h.board && h.board.length)
+      ? '<div class="tg-board2">' + cardTokens(h.board.join(" ")) + "</div>"
+      : '<div class="tg-board2 empty">pre-flop</div>';
+
+    let resultHtml = "";
+    if (h.result && h.result.winners && h.result.winners.length) {
+      resultHtml = '<div class="tengan-result">' + h.result.winners.map(function (w) {
+        const amt = (typeof w.amount === "number") ? " $" + w.amount.toFixed(2) : "";
+        const hand = w.handType ? " — " + escapeHtml(w.handType.replace(/&amp;/g, "&")) : " (uncalled)";
+        return '<span class="tg-win">WIN</span> <b>' + escapeHtml(w.name) + "</b>" + amt + hand;
+      }).join("<br>") + "</div>";
+    }
+
+    els.hand.innerHTML =
+      '<div class="tg-tablehdr"><span>Hand ' + escapeHtml(String(h.handId)) + "</span>" +
+        '<span class="tg-street">' + escapeHtml(h.street || "") + "</span></div>" +
+      '<div class="tg-poker-table">' +
+        '<div class="tg-felt"></div>' +
+        '<div class="tg-center">' + boardHtml +
+          '<div class="tg-pot2">Pot ' + (h.pot != null ? fmtMoney(h.pot) : "—") + "</div>" +
+        "</div>" +
+        seatsHtml +
+      "</div>" +
+      resultHtml;
+  }
+
+  function actClass(action) {
+    if (action === "fold") return "fold";
+    if (action === "check") return "check";
+    if (action === "call") return "call";
+    if (action === "bet" || action === "raise" || action === "bet/raise") return "agg";
+    return "";
+  }
+
+  function renderPlayers() {
+    if (!els || !els.players) return;
+    const P = window.PokerParser;
+    const stats = (P && P.getPlayerStats) ? P.getPlayerStats() : [];
+    if (!stats.length) {
+      els.players.innerHTML = '<div class="tengan-empty">No hands tracked yet — play/observe a few hands.</div>';
+      return;
+    }
+    let rows = "";
+    for (const r of stats) {
+      const af = r.af === Infinity ? "∞" : r.af;
+      const bluff = r.bluff == null ? "—" : r.bluff + "%";
+      const exp = state.expandedPlayer === r.name;
+      rows += `<tr class="tg-prow${exp ? " exp" : ""}" data-name="${escapeHtml(r.name)}">
+        <td>${escapeHtml(r.name)}</td>
+        <td class="num">${r.hands}</td><td class="num">${r.vpip}</td><td class="num">${r.pfr}</td>
+        <td class="num">${af}</td><td class="num">${r.wtsd}</td>
+        <td class="num">${bluff}${r.bluffN ? '<span class="tg-n"> ' + r.bluffN + "</span>" : ""}</td>
+      </tr>`;
+      if (exp) {
+        const hist = (P.getPlayerHistory(r.name) || []).slice(0, 15);
+        let hh = hist.map(function (h) {
+          const line = h.lines.map(function (l) {
+            return '<b>' + l.street.charAt(0).toUpperCase() + "</b> " + escapeHtml(l.acts.join(","));
+          }).join("  ");
+          const tail = (h.shown ? " [" + escapeHtml(h.shown) + "]" : "") +
+            (h.handType ? " " + escapeHtml(h.handType.replace(/&amp;/g, "&")) : "") + " — " + h.result;
+          return '<div class="tg-hh">' + line + escapeHtml(tail) + "</div>";
+        }).join("");
+        if (!hh) hh = '<div class="tengan-empty">no recorded hands yet</div>';
+        rows += '<tr class="tg-hist"><td colspan="7">' + hh + "</td></tr>";
+      }
+    }
+    els.players.innerHTML =
+      '<div class="tg-legend">' +
+        '<div><b>VPIP / PFR</b><span>% of hands played / raised preflop</span></div>' +
+        '<div><b>AF</b><span>aggression factor = (bets + raises) / calls</span></div>' +
+        '<div><b>WTSD</b><span>% of flops seen that reached showdown</span></div>' +
+        '<div><b>Bluff%</b><span>bet/raised river then showed no pair (n = shown hands)</span></div>' +
+        '<div class="tg-legend-hint">Tap a player for their hand-by-hand history.</div>' +
+      "</div>" +
+      '<table class="tengan-pstats"><thead><tr>' +
+      '<th>Player</th><th>Hd</th><th>VP</th><th>PFR</th><th>AF</th><th>WTSD</th><th>Bluff</th>' +
+      '</tr></thead><tbody>' + rows + "</tbody></table>";
+    els.players.querySelectorAll(".tg-prow").forEach(function (tr) {
+      tr.addEventListener("click", function () {
+        const n = tr.getAttribute("data-name");
+        state.expandedPlayer = state.expandedPlayer === n ? null : n;
+        renderPlayers();
+      });
+    });
   }
 
   function actionText(a) {
@@ -529,22 +839,39 @@
 
   function renderFeed() {
     if (!els || !els.feed) return;
-    const actions = state.hand && state.hand.actions;
-    if (!actions || !actions.length) {
-      els.feed.innerHTML = `<div class="tengan-empty">No actions yet this hand.</div>`;
-      return;
-    }
-    let last = null, rows = "";
-    for (const a of actions) {
-      if (a.street !== last) {
-        rows += `<div class="tengan-street">${escapeHtml(a.street || "")}</div>`;
-        last = a.street;
+    const actions = (state.hand && state.hand.actions) || [];
+    // Always render all four street columns; a new hand just empties them.
+    const order = ["preflop", "flop", "turn", "river"];
+    const byStreet = {};
+    for (const a of actions) (byStreet[a.street] = byStreet[a.street] || []).push(a);
+    let cols = "";
+    for (const st of order) {
+      let rows = "";
+      for (const a of (byStreet[st] || [])) {
+        const who = (a.position ? '<span class="tg-fpos">' + escapeHtml(a.position) + "</span>" : "") +
+          '<span class="tg-fname">' + escapeHtml(a.name) + "</span>";
+        rows += '<div class="tg-frow">' + who +
+          '<span class="tg-fact ' + actClass(a.action) + '">' + escapeHtml(feedLabel(a)) + "</span></div>";
       }
-      const who = (a.position ? a.position + " " : "") + a.name;
-      const cls = a.action === "fold" ? "fold" : (a.action === "raise" || a.action === "bet") ? "agg" : "";
-      rows += `<div class="tengan-action ${cls}"><span class="who">${escapeHtml(who)}</span><span class="act">${escapeHtml(actionText(a))}</span></div>`;
+      if (!rows) rows = '<div class="tg-fempty">·</div>';
+      cols += '<div class="tg-fcol"><div class="tg-fstreet">' + st + "</div>" + rows + "</div>";
     }
-    els.feed.innerHTML = rows;
+    els.feed.innerHTML = cols;
+  }
+
+  // Compact action label for the feed (verb + amount only).
+  function feedLabel(a) {
+    switch (a.action) {
+      case "raise": return "raise " + fmtMoney(a.toAmount);
+      case "bet": return "bet " + fmtMoney(a.toAmount || a.amount);
+      case "call": return "call " + fmtMoney(a.amount || a.toAmount);
+      case "post SB": return "SB " + fmtMoney(a.toAmount);
+      case "post BB": return "BB " + fmtMoney(a.toAmount);
+      case "fold": return "fold";
+      case "check": return "check";
+      case "timeout": return "timeout";
+      default: return a.action;
+    }
   }
 
   function exportJson() {

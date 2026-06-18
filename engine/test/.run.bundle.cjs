@@ -74,6 +74,9 @@ var COMBOS5_OF_7 = (() => {
   return res;
 })();
 function evaluate7(cards) {
+  return evaluate7Best(cards);
+}
+function evaluate7Best(cards) {
   const ranks = cards.map(rankOf);
   const suits = cards.map(suitOf);
   let best = -1;

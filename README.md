@@ -27,6 +27,33 @@ traffic, and redacts credentials before they reach the UI.
     blind posts, folds, checks, calls (with amount), bets/raises (with the
     raise-to amount), and timeouts — derived by diffing `la`/`b` across frames.
     Only clean labels are shown; raw `la` numbers are never displayed.
+  - a **winner banner** when a hand ends (winner, amount, winning hand type),
+    plus the **showdown** hands that were revealed.
+  - a **Players tab** with per-opponent stats accumulated across the session.
+
+## Players tab & bluffing rate
+
+The Players tab tracks every player across the session and computes:
+
+- **VPIP** — % of hands they voluntarily put money in preflop.
+- **PFR** — % of hands they raised preflop.
+- **AF** — aggression factor = (bets + raises) / calls.
+- **WTSD** — % of flops-seen that reached showdown.
+- **Bluff%** — a *shown-cards* river bluff rate: of the hands where the player
+  made the last bet/raise on the **river** and their cards were revealed at
+  showdown, the % where they showed **no pair** (a clear bluff). The sample size
+  `n` is shown next to it, because a meaningful bluff rate needs many shown
+  showdowns. This is only computable because Stake reveals showdown hands in the
+  stream (`d` field at `m.r` 5–6); we evaluate the 7-card hand with the engine's
+  `handCategory` to classify it.
+
+Click a player row to expand their **per-street decision history** (their line on
+preflop/flop/turn/river for recent hands, with shown cards and result).
+
+Accuracy note: the action feed and stats are reconstructed by diffing periodic
+`GameState` snapshots, so on **sparse captures** (few frames per hand) some
+actions can be missed or approximated. Denser captures → more accurate stats.
+Folds are detected by `la===1` (the seat-state `s` field is *not* a fold flag).
 
 ### Last-action (`la`) code map
 

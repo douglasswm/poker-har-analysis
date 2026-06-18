@@ -1,7 +1,0 @@
-node_modules/
-engine/node_modules/
-engine/package.json
-engine/package-lock.json
-engine/test/.run.bundle.cjs
-*.log
-.DS_Store

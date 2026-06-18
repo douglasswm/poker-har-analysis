@@ -49,17 +49,17 @@
     const d = gs.d || {};
     const board = parseCardList(d.c || "");
     const bb = gs.bbv || 2;
+    const seatCards = (s) => s ? parseCardList(s.dc || s.d || "") : [];
     let heroSeat = -1, heroCards = [];
     if (opts && opts.heroSeat != null && seats[opts.heroSeat] && seats[opts.heroSeat].dn) {
       heroSeat = opts.heroSeat;
-      const s = seats[heroSeat];
-      heroCards = opts.heroCards && opts.heroCards.length === 2 ? opts.heroCards.slice() : s.dc ? parseCardList(s.dc) : [];
+      heroCards = opts.heroCards && opts.heroCards.length === 2 ? opts.heroCards.slice() : seatCards(seats[heroSeat]);
     } else {
       for (let i = 0; i < seats.length; i++) {
-        const s = seats[i];
-        if (s && s.dc) {
+        const ids = seatCards(seats[i]);
+        if (ids.length === 2) {
           heroSeat = i;
-          heroCards = parseCardList(s.dc);
+          heroCards = ids;
           break;
         }
       }
@@ -83,8 +83,7 @@
     const pot = typeof d.p === "number" ? d.p : 0;
     const toCall = Math.max(0, maxBet - heroBet);
     const pos = positions[heroSeat] || "";
-    const earlyPost = ["SB", "BB", "UTG", "UTG+1", "MP", "HJ"];
-    const heroIsOOP = earlyPost.includes(pos);
+    const heroIsOOP = pos !== "CO" && pos !== "BTN";
     return {
       ok: heroSeat >= 0,
       reason: heroSeat < 0 ? "hero not seated (spectating)" : void 0,
@@ -161,42 +160,274 @@
     if (r1 === r2) return hi + lo;
     return hi + lo + (suited ? "s" : "o");
   }
+  function toChartPos(label) {
+    switch (label) {
+      case "SB":
+        return "SB";
+      case "BB":
+        return "BB";
+      case "BTN":
+        return "BTN";
+      case "CO":
+        return "CO";
+      case "HJ":
+        return "HJ";
+      case "LJ":
+      case "MP":
+        return "MP";
+      case "UTG":
+      case "UTG+1":
+      case "UTG+2":
+      case "UTG+3":
+        return "UTG";
+      default:
+        return "MP";
+    }
+  }
+  var PAIRS = ["22", "33", "44", "55", "66", "77", "88", "99", "TT", "JJ", "QQ", "KK", "AA"];
+  var SUITED_ACES = ["A2s", "A3s", "A4s", "A5s", "A6s", "A7s", "A8s", "A9s", "ATs", "AJs", "AQs", "AKs"];
+  var R_UTG = [
+    ...PAIRS,
+    ...SUITED_ACES,
+    "AKo",
+    "AQo",
+    "AJo",
+    "KQo",
+    "KQs",
+    "KJs",
+    "KTs",
+    "K9s",
+    "QJs",
+    "QTs",
+    "Q9s",
+    "JTs",
+    "J9s",
+    "T9s",
+    "98s",
+    "87s",
+    "76s",
+    "65s"
+  ];
+  var R_MP = [...R_UTG, "ATo", "KJo", "QJo", "KTo", "K8s", "Q8s", "J8s", "T8s", "97s", "86s", "54s"];
+  var R_HJ = [...R_MP, "A9o", "A8o", "QTo", "JTo", "K7s", "K6s", "Q7s", "J7s", "T7s", "96s", "75s", "64s", "53s"];
+  var R_CO = [
+    ...R_HJ,
+    "A7o",
+    "A6o",
+    "A5o",
+    "A4o",
+    "A3o",
+    "A2o",
+    "K9o",
+    "Q9o",
+    "J9o",
+    "T9o",
+    "98o",
+    "K5s",
+    "K4s",
+    "K3s",
+    "K2s",
+    "Q6s",
+    "Q5s",
+    "Q4s",
+    "J6s",
+    "J5s",
+    "T6s",
+    "95s",
+    "85s",
+    "74s",
+    "63s",
+    "52s",
+    "43s",
+    "32s"
+  ];
+  var R_BTN = [
+    ...R_CO,
+    "K8o",
+    "K7o",
+    "K6o",
+    "K5o",
+    "K4o",
+    "K3o",
+    "K2o",
+    "Q8o",
+    "Q7o",
+    "Q6o",
+    "Q5o",
+    "J8o",
+    "J7o",
+    "J6o",
+    "T8o",
+    "T7o",
+    "97o",
+    "87o",
+    "86o",
+    "76o",
+    "75o",
+    "65o",
+    "64o",
+    "54o",
+    "53o",
+    "43o",
+    "J4s",
+    "J3s",
+    "J2s",
+    "T5s",
+    "T4s",
+    "T3s",
+    "T2s",
+    "94s",
+    "93s",
+    "84s",
+    "83s",
+    "73s",
+    "72s",
+    "62s",
+    "42s"
+  ];
+  var R_SB = [
+    ...R_HJ,
+    "A7o",
+    "A6o",
+    "A5o",
+    "A4o",
+    "A3o",
+    "A2o",
+    "K9o",
+    "Q9o",
+    "J9o",
+    "T9o",
+    "98o",
+    "K5s",
+    "K4s",
+    "K3s",
+    "K2s",
+    "Q6s",
+    "Q5s",
+    "J6s",
+    "T6s",
+    "95s",
+    "85s",
+    "74s",
+    "63s",
+    "52s",
+    "43s"
+  ];
   var RFI = {
-    UTG: ["AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "AKs", "AQs", "AJs", "ATs", "KQs", "KJs", "QJs", "JTs", "AKo", "AQo"],
-    MP: ["AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "66", "55", "AKs", "AQs", "AJs", "ATs", "A9s", "KQs", "KJs", "KTs", "QJs", "QTs", "JTs", "T9s", "98s", "AKo", "AQo", "AJo", "KQo"],
-    CO: ["AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "66", "55", "44", "33", "22", "AKs", "AQs", "AJs", "ATs", "A9s", "A8s", "A7s", "A6s", "A5s", "A4s", "A3s", "A2s", "KQs", "KJs", "KTs", "K9s", "QJs", "QTs", "Q9s", "JTs", "J9s", "T9s", "98s", "87s", "76s", "65s", "AKo", "AQo", "AJo", "ATo", "KQo", "KJo", "QJo"],
-    BTN: ["AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "66", "55", "44", "33", "22", "AKs", "AQs", "AJs", "ATs", "A9s", "A8s", "A7s", "A6s", "A5s", "A4s", "A3s", "A2s", "KQs", "KJs", "KTs", "K9s", "K8s", "K7s", "K6s", "K5s", "QJs", "QTs", "Q9s", "Q8s", "JTs", "J9s", "J8s", "T9s", "T8s", "98s", "97s", "87s", "86s", "76s", "65s", "54s", "AKo", "AQo", "AJo", "ATo", "A9o", "KQo", "KJo", "KTo", "QJo", "QTo", "JTo", "T9o"],
-    SB: ["AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "66", "55", "44", "33", "22", "AKs", "AQs", "AJs", "ATs", "A9s", "A8s", "A7s", "A6s", "A5s", "A4s", "A3s", "A2s", "KQs", "KJs", "KTs", "K9s", "QJs", "QTs", "Q9s", "JTs", "J9s", "T9s", "98s", "87s", "76s", "65s", "AKo", "AQo", "AJo", "ATo", "KQo", "KJo", "QJo"],
+    UTG: R_UTG,
+    MP: R_MP,
+    HJ: R_HJ,
+    CO: R_CO,
+    BTN: R_BTN,
+    SB: R_SB,
     BB: []
     // BB defends by calling/3-betting vs a raise, handled separately
   };
+  var OPEN_ORDER = ["UTG", "MP", "HJ", "CO", "BTN"];
+  function rangeAtShift(pos, shift) {
+    if (pos === "BB") return [];
+    if (pos === "SB") {
+      if (shift <= -1) return R_HJ;
+      if (shift >= 1) return R_BTN;
+      return R_SB;
+    }
+    const i = OPEN_ORDER.indexOf(pos);
+    if (i < 0) return RFI[pos] || [];
+    const j = Math.max(0, Math.min(OPEN_ORDER.length - 1, i + shift));
+    return RFI[OPEN_ORDER[j]];
+  }
+  var SHOVE_BB = 25;
+  function sortOpts(opts) {
+    return opts.filter((o) => o.freq > 1e-3).sort((a, b) => b.freq - a.freq);
+  }
+  var OPEN_BB = 2.5;
+  var OPEN_SB_BB = 3;
+  var THREEBET_BB = 9;
   function preflopAdvice(c1, c2, pos, facing, stackBB = 100) {
     const code = handCode(c1, c2);
-    const inRange = (RFI[pos] || []).includes(code);
-    if (stackBB <= 20) {
-      const premium = ["AA", "KK", "QQ", "JJ", "AKs", "AKo", "AQs"].includes(code);
-      if (facing === "raise") {
-        if (premium) return { action: "raise", rationale: `Short (${Math.round(stackBB)}bb): shove (all-in) ${code} over the raise.` };
-        return { action: "fold", rationale: `${code} folds to a raise at ${Math.round(stackBB)}bb.` };
+    const core = rangeAtShift(pos, -1);
+    const std = rangeAtShift(pos, 0);
+    const ext = rangeAtShift(pos, 1);
+    const playFreq = () => {
+      if (core.includes(code)) return 1;
+      if (std.includes(code)) return 0.66;
+      if (ext.includes(code)) return 0.33;
+      return 0;
+    };
+    const premium = ["AA", "KK", "QQ", "AKs", "AKo"].includes(code);
+    const shortStack = stackBB <= SHOVE_BB;
+    const bbRound = Math.round(stackBB);
+    if (facing === "open") {
+      if (pos === "BB") return { options: [{ action: "check", freq: 1 }], rationale: "BB \u2014 checked to you." };
+      const f = playFreq();
+      if (f <= 0) return { options: [{ action: "fold", freq: 1 }], rationale: `${code} is below the ${pos} opening range.` };
+      if (shortStack) {
+        const opts2 = [{ action: "allin", freq: f }];
+        if (f < 1) opts2.push({ action: "fold", freq: 1 - f });
+        return { options: sortOpts(opts2), rationale: `${bbRound}bb \u2014 open-shove range from ${pos}.` };
       }
-      if (pos === "BB" && facing === "unopened") return { action: "check", rationale: "BB option." };
-      if (inRange || premium) return { action: "raise", rationale: `Short (${Math.round(stackBB)}bb): open-shove (all-in) ${code}.` };
-      return { action: "fold", rationale: `${code} below the ${pos} shoving range at ${Math.round(stackBB)}bb.` };
+      const sizeBB = pos === "SB" ? OPEN_SB_BB : OPEN_BB;
+      const opts = [{ action: "raise", freq: f, sizeBB }];
+      if (f < 1) opts.push({ action: "fold", freq: 1 - f });
+      return { options: sortOpts(opts), rationale: f >= 1 ? `${code} opens from ${pos}.` : `${code} \u2014 borderline open from ${pos} (mix).` };
     }
-    if (facing === "unopened") {
-      if (pos === "BB") return { action: "check", rationale: "BB, folded to you \u2014 check your option." };
-      if (inRange) return { action: "raise", sizeBB: pos === "SB" ? 3 : 2.5, rationale: `${code} is in the ${pos} RFI range.` };
-      return { action: "fold", rationale: `${code} is below the ${pos} opening range.` };
+    const latePos = pos === "BTN" || pos === "BB" || pos === "CO" || pos === "HJ";
+    if (shortStack) {
+      if (premium) return { options: [{ action: "allin", freq: 1 }], rationale: `${bbRound}bb \u2014 shove ${code} over the raise.` };
+      if (core.includes(code)) return { options: [{ action: "allin", freq: 1 }], rationale: `${bbRound}bb \u2014 re-shove ${code}.` };
+      if (std.includes(code)) return { options: sortOpts([{ action: "allin", freq: 0.5 }, { action: "fold", freq: 0.5 }]), rationale: `${bbRound}bb \u2014 ${code} is a marginal re-shove (mix).` };
+      return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} at ${bbRound}bb vs a raise.` };
     }
-    if (facing === "raise") {
-      const premium = ["AA", "KK", "QQ", "AKs", "AKo"].includes(code);
-      const strong = RFI.CO.includes(code);
-      if (premium) return { action: "raise", sizeBB: 9, rationale: `${code} is a premium 3-bet for value.` };
-      if (strong && (pos === "BTN" || pos === "BB" || pos === "CO")) return { action: "call", rationale: `${code} is a reasonable call/defend in ${pos}.` };
-      return { action: "fold", rationale: `${code} folds to a raise from ${pos}.` };
+    if (premium) return { options: [{ action: "raise", freq: 1, sizeBB: THREEBET_BB }], rationale: `${code} \u2014 3-bet for value.` };
+    if (!latePos) return { options: [{ action: "fold", freq: 1 }], rationale: `${code} folds to the raise out of position.` };
+    if (core.includes(code)) {
+      return { options: [{ action: "call", freq: 1 }], rationale: `${code} \u2014 defend in ${pos}.` };
     }
-    if (inRange) return { action: "raise", sizeBB: 4, rationale: `Iso-raise ${code} over the limp.` };
-    return { action: "fold", rationale: `${code} folds over a limp from ${pos}.` };
+    if (std.includes(code)) {
+      return { options: sortOpts([{ action: "call", freq: 0.5 }, { action: "fold", freq: 0.5 }]), rationale: `${code} \u2014 marginal defend in ${pos} (mix).` };
+    }
+    return { options: [{ action: "fold", freq: 1 }], rationale: `${code} folds to the raise.` };
+  }
+  var GRID_RANKS = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+  function preflopGrid(posLabel, facing, stackBB) {
+    const pos = toChartPos(posLabel || "BTN");
+    const cells = [];
+    const tally = { allin: 0, raise: 0, call: 0, check: 0, fold: 0 };
+    let totalCombos = 0;
+    for (let r = 0; r < 13; r++) {
+      for (let c = 0; c < 13; c++) {
+        const hiRank = GRID_RANKS[Math.min(r, c)];
+        const loRank = GRID_RANKS[Math.max(r, c)];
+        const pair = r === c;
+        const suited = c > r;
+        let c1, c2, combos;
+        if (pair) {
+          c1 = hiRank * 4 + 0;
+          c2 = hiRank * 4 + 1;
+          combos = 6;
+        } else if (suited) {
+          c1 = hiRank * 4 + 0;
+          c2 = loRank * 4 + 0;
+          combos = 4;
+        } else {
+          c1 = hiRank * 4 + 0;
+          c2 = loRank * 4 + 1;
+          combos = 12;
+        }
+        const adv = preflopAdvice(c1, c2, pos, facing, stackBB);
+        cells.push({ code: handCode(c1, c2), pair, suited, options: adv.options });
+        for (const o of adv.options) tally[o.action] = (tally[o.action] || 0) + o.freq * combos;
+        totalCombos += combos;
+      }
+    }
+    const legend = {
+      allin: +(tally.allin / totalCombos * 100).toFixed(2),
+      raise: +(tally.raise / totalCombos * 100).toFixed(2),
+      call: +(tally.call / totalCombos * 100).toFixed(2),
+      check: +(tally.check / totalCombos * 100).toFixed(2),
+      fold: +(tally.fold / totalCombos * 100).toFixed(2)
+    };
+    return { pos, facing, cells, legend };
   }
   function expandRange(codes, board) {
     const out = [];
@@ -288,7 +519,53 @@
             for (let e = d + 1; e < 7; e++) res.push([a, b, c, d, e]);
     return res;
   })();
+  var CATEGORY_NAMES = [
+    "High Card",
+    "Pair",
+    "Two Pair",
+    "Three of a Kind",
+    "Straight",
+    "Flush",
+    "Full House",
+    "Four of a Kind",
+    "Straight Flush"
+  ];
+  var _combosCache = {};
+  function combos5(n) {
+    const key = n + "c5";
+    if (_combosCache[key]) return _combosCache[key];
+    const res = [];
+    for (let a = 0; a < n; a++)
+      for (let b = a + 1; b < n; b++)
+        for (let c = b + 1; c < n; c++)
+          for (let d = c + 1; d < n; d++)
+            for (let e = d + 1; e < n; e++) res.push([a, b, c, d, e]);
+    _combosCache[key] = res;
+    return res;
+  }
+  function bestScore(cards) {
+    if (cards.length < 5) return -1;
+    const ranks = cards.map(rankOf);
+    const suits = cards.map(suitOf);
+    let best = -1;
+    for (const idx of combos5(cards.length)) {
+      const v = score5(
+        [ranks[idx[0]], ranks[idx[1]], ranks[idx[2]], ranks[idx[3]], ranks[idx[4]]],
+        [suits[idx[0]], suits[idx[1]], suits[idx[2]], suits[idx[3]], suits[idx[4]]]
+      );
+      if (v > best) best = v;
+    }
+    return best;
+  }
+  function handCategory(cards) {
+    if (!cards || cards.length < 5) return { cat: -1, name: "?" };
+    const cat = Math.floor(bestScore(cards) / Math.pow(16, 5));
+    return { cat, name: CATEGORY_NAMES[cat] };
+  }
   function evaluate7(cards) {
+    return evaluate7Best(cards);
+  }
+  function evaluate7Best(cards) {
     const ranks = cards.map(rankOf);
     const suits = cards.map(suitOf);
     let best = -1;
@@ -579,6 +856,23 @@
   };
 
   // engine/src/advisor.ts
+  function hasStrongDraw(cards) {
+    const suits = [0, 0, 0, 0];
+    for (const c of cards) suits[suitOf(c)]++;
+    if (suits.some((s) => s === 4)) return true;
+    const rset = new Set(cards.map(rankOf));
+    const ranks = [...rset];
+    if (rset.has(12)) ranks.push(-1);
+    ranks.sort((a, b) => a - b);
+    let run = 1, best = 1;
+    for (let i = 1; i < ranks.length; i++) {
+      if (ranks[i] === ranks[i - 1] + 1) {
+        run++;
+        best = Math.max(best, run);
+      } else if (ranks[i] !== ranks[i - 1]) run = 1;
+    }
+    return best >= 4;
+  }
   function advise(spot, opts) {
     if (!spot.ok) {
       return { headline: "\u2014", source: "math", detail: spot.reason || "no spot" };
@@ -592,15 +886,22 @@
     }
     const stackBB = spot.bb > 0 ? spot.effStack / spot.bb : 100;
     if (spot.street === "preflop") {
-      const facing = spot.toCall > spot.bb ? "raise" : spot.toCall > 0 ? "limp" : "unopened";
-      const adv = preflopAdvice(spot.heroCards[0], spot.heroCards[1], spot.heroPosition || "BTN", facing, stackBB);
-      const shove = stackBB <= 20 && adv.action === "raise";
-      const size = adv.sizeBB ? ` ${adv.sizeBB}bb` : "";
+      const facing = spot.toCall > spot.bb ? "raise" : "open";
+      const adv = preflopAdvice(spot.heroCards[0], spot.heroCards[1], toChartPos(spot.heroPosition || "BTN"), facing, stackBB);
+      const actions = adv.options.map((o) => ({
+        kind: o.action === "allin" ? "raise" : o.action,
+        freq: o.freq,
+        allin: o.action === "allin",
+        sizeBB: o.action === "raise" ? o.sizeBB : void 0
+      }));
       return {
-        headline: shove ? "ALL-IN" : `${adv.action.toUpperCase()}${size}`,
+        headline: "",
         source: "chart",
         detail: adv.rationale,
-        note: "Preflop chart (6-max default ranges)."
+        bb: spot.bb,
+        top: actions[0],
+        actions,
+        note: "Preflop chart."
       };
     }
     const betFrac = spot.toCall > 0 ? callFracOfPot(spot.toCall, spot.pot - spot.toCall || spot.pot) : 0.66;
@@ -618,14 +919,133 @@
         };
       }
     }
-    const facingBet = spot.toCall > 0;
-    return {
-      headline: facingBet ? `Defend \u2265 ${math.mdfPct}% of range; need ${math.potOddsPct}% equity to call` : `Bet sizing reference; SPR ${math.spr}`,
-      source: "math",
-      detail: facingBet ? `Facing ~${(betFrac * 100).toFixed(0)}% pot. MDF ${math.mdfPct}%, pot odds ${math.potOddsPct}%.` : `Polarize big / merge small. Optimal bluff share at this size \u2248 ${math.bluffPct}%.`,
-      math,
-      note: "Flop/turn live solving is out of scope (too slow); GTO math shown instead."
+    return flopTurnAdvice(spot, math);
+  }
+  var POSTFLOP = {
+    valueEq: 0.58,
+    valueMedSize: 0.5,
+    valueBigEq: 0.72,
+    valueBigSize: 0.75,
+    semibluffFreq: 0.66,
+    bluffFreq: 0.3,
+    bluffSize: 0.75,
+    raiseEq: 0.7,
+    raiseSize: 0.75,
+    callBuffer: 0.05
+  };
+  function heroEquity(hero, board, villRange, samples) {
+    const need = 5 - board.length;
+    if (need < 0 || !villRange.length) return 0.5;
+    const used = /* @__PURE__ */ new Set([...hero, ...board]);
+    const deck = [];
+    for (let c = 0; c < 52; c++) if (!used.has(c)) deck.push(c);
+    let win = 0, tie = 0, n = 0;
+    for (let s = 0; s < samples; s++) {
+      const vc = villRange[Math.random() * villRange.length | 0];
+      if (used.has(vc.a) || used.has(vc.b)) continue;
+      const run = [];
+      let guard = 0;
+      while (run.length < need && guard < 200) {
+        const c = deck[Math.random() * deck.length | 0];
+        if (c === vc.a || c === vc.b || run.indexOf(c) >= 0) {
+          guard++;
+          continue;
+        }
+        run.push(c);
+      }
+      if (run.length < need) continue;
+      const hs = evaluate7([hero[0], hero[1], ...board, ...run]);
+      const vs = evaluate7([vc.a, vc.b, ...board, ...run]);
+      if (hs > vs) win++;
+      else if (hs === vs) tie++;
+      n++;
+    }
+    return n ? (win + tie * 0.5) / n : 0.5;
+  }
+  function flopTurnAdvice(spot, math) {
+    const cfg = POSTFLOP;
+    const all = [...spot.heroCards, ...spot.board];
+    const draw = hasStrongDraw(all);
+    const cat = handCategory(all).cat;
+    const madeShowdown = cat >= 1;
+    const pot = spot.pot;
+    const bb = spot.bb;
+    const villRange = expandRange(GENERIC_CONTINUE, [...spot.board, ...spot.heroCards]);
+    const eq = heroEquity(spot.heroCards, spot.board, villRange, 1500);
+    const eqPct = Math.round(eq * 100);
+    const eff = spot.effStack;
+    const cap = (a) => {
+      if (eff > 0 && a.amount != null && a.amount >= eff) {
+        a.amount = eff;
+        a.allin = true;
+      }
+      return a;
     };
+    const bet = (frac, freq = 1) => cap({ kind: "bet", freq, potFrac: frac, amount: Math.round(frac * pot) });
+    const raiseTo = (frac) => {
+      const potAfterCall = pot + spot.toCall;
+      return cap({ kind: "raise", freq: 1, potFrac: frac, amount: spot.toCall + Math.round(frac * potAfterCall) });
+    };
+    const plain = (kind, freq = 1) => ({ kind, freq });
+    const mix = (betFrac, betFreq) => {
+      const b = bet(betFrac, betFreq);
+      const c = plain("check", 1 - betFreq);
+      return betFreq >= 0.5 ? { actions: [b, c], top: b } : { actions: [c, b], top: c };
+    };
+    let actions;
+    let top;
+    let detail;
+    if (spot.toCall > 0) {
+      const betFrac = callFracOfPot(spot.toCall, pot - spot.toCall || pot);
+      const need = potOddsEquity(betFrac);
+      const needPct = Math.round(need * 100);
+      const band = 0.03;
+      if (eq >= cfg.raiseEq) {
+        top = raiseTo(cfg.raiseSize);
+        actions = [top];
+        detail = `~${eqPct}% equity \u2014 raise for value.`;
+      } else if (eq >= need + band) {
+        top = plain("call");
+        actions = [top];
+        detail = `~${eqPct}% vs ${needPct}% needed \u2014 call.`;
+      } else if (eq >= need - band) {
+        let callF = (eq - (need - band)) / (2 * band);
+        callF = Math.max(0.05, Math.min(0.95, callF));
+        const c = plain("call", callF);
+        const f = plain("fold", 1 - callF);
+        ({ actions, top } = callF >= 0.5 ? { actions: [c, f], top: c } : { actions: [f, c], top: f });
+        detail = `~${eqPct}% \u2248 ${needPct}% needed \u2014 marginal, mix call/fold.`;
+      } else if (draw && eq >= need - cfg.callBuffer) {
+        top = plain("call");
+        actions = [top];
+        detail = `~${eqPct}% + draw \u2014 call.`;
+      } else {
+        top = plain("fold");
+        actions = [top];
+        detail = `~${eqPct}% < ${needPct}% needed \u2014 fold.`;
+      }
+    } else {
+      if (eq >= cfg.valueBigEq) {
+        top = bet(cfg.valueBigSize);
+        actions = [top];
+        detail = `~${eqPct}% equity \u2014 value bet (big).`;
+      } else if (eq >= cfg.valueEq) {
+        top = bet(cfg.valueMedSize);
+        actions = [top];
+        detail = `~${eqPct}% equity \u2014 value bet.`;
+      } else if (draw && cfg.semibluffFreq > 0) {
+        ({ actions, top } = mix(cfg.bluffSize, cfg.semibluffFreq));
+        detail = `~${eqPct}% + draw \u2014 semi-bluff (mix).`;
+      } else if (!madeShowdown && cfg.bluffFreq > 0) {
+        ({ actions, top } = mix(cfg.bluffSize, cfg.bluffFreq));
+        detail = `~${eqPct}% equity \u2014 bluff some, check some.`;
+      } else {
+        top = plain("check");
+        actions = [top];
+        detail = madeShowdown ? `~${eqPct}% equity \u2014 showdown value, check.` : `~${eqPct}% equity \u2014 check.`;
+      }
+    }
+    return { headline: "", source: "equity", detail, bb, top, actions, math };
   }
   function solveRiver(spot, iterations) {
     const heroIsOOP = spot.heroIsOOP;
@@ -658,27 +1078,23 @@
     const rs = solver.rootStrategy();
     const hero = rs.perCombo[0];
     const actions = rs.actions.map((act, k) => ({
-      label: labelFor(act, spot.pot),
+      kind: act.kind,
+      amount: act.amount,
+      allin: act.allin,
       freq: hero ? hero.freqs[k] : 0
     }));
     actions.sort((a, b) => b.freq - a.freq);
     const top = actions[0];
     return {
-      headline: top ? `${top.label.toUpperCase()} (${(top.freq * 100).toFixed(0)}%)` : "\u2014",
+      headline: "",
       source: "solver",
       detail: `Hero ${cardStr(spot.heroCards[0])}${cardStr(spot.heroCards[1])} on ${spot.board.map(cardStr).join(" ")} \u2014 DCFR over a generic villain range.`,
       actions,
+      top,
+      bb: spot.bb,
       exploitabilityPct: +exploitabilityPct.toFixed(2),
       note: "Villain range is a generic continuing range (no read). Single-street solve."
     };
-  }
-  function labelFor(act, pot) {
-    if (act.kind === "check") return "check";
-    if (act.kind === "fold") return "fold";
-    if (act.kind === "call") return "call";
-    if (act.allin) return act.kind === "raise" ? "raise all-in" : "all-in";
-    const frac = pot > 0 ? act.amount / pot : 0;
-    return `${act.kind} ${frac.toFixed(2)}x pot`;
   }
 
   // engine/src/index.ts
@@ -687,6 +1103,10 @@
     buildSpot,
     advise,
     cardStr,
+    handCategory,
+    // {cat,name} for a 7-card hand (used for bluff classification)
+    preflopGrid,
+    // 13x13 strategy matrix for a position/facing/stack
     gtomath: gtomath_exports,
     // Convenience: from a raw GameState json + positions map -> recommendation.
     // opts may force a hero seat / supply hole cards, and set solve iterations.

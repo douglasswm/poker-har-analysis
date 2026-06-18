@@ -3,6 +3,8 @@
 import { buildSpot } from "./spot.js";
 import { advise } from "./advisor.js";
 import { cardStr } from "./cards.js";
+import { handCategory } from "./evaluator.js";
+import { preflopGrid } from "./ranges.js";
 import * as gtomath from "./gtomath.js";
 
 const TenganEngine = {
@@ -10,6 +12,8 @@ const TenganEngine = {
   buildSpot,
   advise,
   cardStr,
+  handCategory,   // {cat,name} for a 7-card hand (used for bluff classification)
+  preflopGrid,    // 13x13 strategy matrix for a position/facing/stack
   gtomath,
   // Convenience: from a raw GameState json + positions map -> recommendation.
   // opts may force a hero seat / supply hole cards, and set solve iterations.
