@@ -29,6 +29,7 @@
     1: "fold",
     2: "check",
     3: "call",
+    4: "post ante",   // tournament ante posted at hand start
     6: "post SB",
     7: "post BB",
     8: "bet/raise",
@@ -223,6 +224,7 @@
     if (folded && !prevFolded) return { action: "fold", amount: 0 };
     switch (curLa) {
       case 1: return { action: "fold", amount: 0 };
+      case 4: return null; // post ante — forced post, not a betting action
       case 6: return { action: "post SB", amount: curB };
       case 7: return { action: "post BB", amount: curB };
       case 26: return { action: "timeout", amount: 0 };
@@ -463,6 +465,13 @@
         for (const seat of parsed.seats) {
           if (lastBySeat[seat.seat]) seat.lastAction = lastBySeat[seat.seat];
         }
+
+        // Preflop aggressor = the seat that made the last preflop bet/raise.
+        let pfAgg = null;
+        for (const a of parsed.actions) {
+          if (a.street === "preflop" && (a.action === "raise" || a.action === "bet")) pfAgg = a.seat;
+        }
+        parsed.preflopAggressor = pfAgg;
 
         // Accumulate this hand's data.
         pending.actions = parsed.actions.slice();

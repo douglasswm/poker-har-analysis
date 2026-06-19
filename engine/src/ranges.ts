@@ -2,6 +2,10 @@
 // defaults (not solver-exact); they give instant preflop guidance and seed
 // approximate ranges for the postflop solver.
 import { Combo, rankOf, suitOf, RANKS } from "./cards.js";
+import { pushFold } from "./pushfold.js";
+
+// At/under this many big blinds in a tournament, preflop is jam-or-fold.
+const MTT_PUSHFOLD_BB = 25;
 
 // 169-hand code, e.g. "AKs", "TT", "72o".
 export function handCode(c1: number, c2: number): string {
@@ -116,9 +120,16 @@ const THREEBET_BB = 9;
 export function preflopAdvice(
   c1: number, c2: number, pos: Pos,
   facing: "open" | "raise",
-  stackBB: number = 100
+  stackBB: number = 100,
+  tournament: boolean = false
 ): PreflopAdvice {
   const code = handCode(c1, c2);
+
+  // Tournament short stack: jam-or-fold. A raise we face at this depth is
+  // treated as a shove to call or fold against.
+  if (tournament && stackBB <= MTT_PUSHFOLD_BB) {
+    return pushFold(code, pos, stackBB, facing === "raise" ? "jam" : "open");
+  }
   // Nested range buckets: core = always play, std = standard, ext = sometimes.
   const core = rangeAtShift(pos, -1);
   const std = rangeAtShift(pos, 0);
@@ -196,7 +207,8 @@ export interface PreflopGrid {
 export function preflopGrid(
   posLabel: string,
   facing: "open" | "raise",
-  stackBB: number
+  stackBB: number,
+  tournament: boolean = false
 ): PreflopGrid {
   const pos = toChartPos(posLabel || "BTN");
   const cells: GridCell[] = [];
@@ -214,7 +226,7 @@ export function preflopGrid(
       else if (suited) { c1 = hiRank * 4 + 0; c2 = loRank * 4 + 0; combos = 4; }
       else { c1 = hiRank * 4 + 0; c2 = loRank * 4 + 1; combos = 12; }
 
-      const adv = preflopAdvice(c1, c2, pos, facing, stackBB);
+      const adv = preflopAdvice(c1, c2, pos, facing, stackBB, tournament);
       cells.push({ code: handCode(c1, c2), pair, suited, options: adv.options });
       for (const o of adv.options) tally[o.action] = (tally[o.action] || 0) + o.freq * combos;
       totalCombos += combos;
@@ -251,4 +263,33 @@ export const GENERIC_CONTINUE: string[] = [
   ...RFI.BTN,
   "Q7s","Q6s","Q5s","J7s","T7s","96s","75s","64s","53s","43s",
   "A8o","A7o","K9o","K9s","Q9o","J9o","98o","T8o"
+];
+
+// A realistic "reached this street / would call" range (~top 25%), sized to
+// keep the live CFR solve fast (≈200 combos). Used as the caller's range in the
+// range-vs-range river solve. Offsuit combos kept minimal (they cost 12 each).
+export const GENERIC_CALL: string[] = [
+  "AA","KK","QQ","JJ","TT","99","88","77","66","55","44","33","22",
+  "A2s","A3s","A4s","A5s","A6s","A7s","A8s","A9s","ATs","AJs","AQs","AKs",
+  "KTs","KJs","KQs","QTs","QJs","JTs","T9s","98s","87s","76s","65s","54s",
+  "AQo","AKo","KQo","AJo"
+];
+
+// Preflop 3-bettor's range (tight value + a few suited bluffs) and the range
+// that calls a 3-bet. Used to seed solver ranges in 3-bet pots, which are much
+// tighter and more polarized than single-raised pots.
+export const THREEBET: string[] = [
+  "AA","KK","QQ","JJ","TT","AKs","AQs","AJs","ATs","A5s","A4s","KQs","KJs","QJs","JTs","AKo","AQo","KQo"
+];
+export const THREEBET_CALL: string[] = [
+  "AA","KK","QQ","JJ","TT","99","88","AKs","AQs","AJs","ATs","KQs","KJs","QJs","JTs","T9s","AKo","AQo"
+];
+
+// A tighter, value-weighted range for when villain has *bet/raised* (they show
+// up stronger than their whole continuing range). Used when hero faces a bet so
+// equity isn't overstated — stops the engine from over-calling air.
+export const GENERIC_CBET: string[] = [
+  "AA","KK","QQ","JJ","TT","99","88","77","66","55","44","33","22",
+  "AKs","AQs","AJs","ATs","A9s","A5s","A4s","KQs","KJs","KTs","QJs","QTs","JTs","T9s","98s","87s","76s","65s",
+  "AKo","AQo","AJo","KQo","KJo","QJo"
 ];

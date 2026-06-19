@@ -19,6 +19,14 @@ export interface SpotInfo {
   heroPosition: string;         // SB/BB/BTN/UTG... from positions
   heroIsOOP: boolean;           // first to act on this street (approx)
   activePlayers: number;
+  isTournament: boolean;        // tournament table (gs.tri present)
+  tournamentId?: number;        // gs.tri (for matching tournament context)
+  ante: number;                 // per-player ante this level (gs.av), 0 if none
+  heroRole?: "aggressor" | "caller"; // hero's preflop role (last raiser vs caller)
+  villainPos?: string;          // primary opponent's position label (for ranges)
+  potType?: "limped" | "srp" | "3bet"; // preflop pot type (drives range width)
+  heroContinued?: boolean;      // hero called a bet on a prior postflop street
+  villainContinued?: boolean;   // villain called a bet on a prior postflop street
 }
 
 const STREET: Record<number, SpotInfo["street"]> = { 1: "preflop", 2: "flop", 3: "turn", 4: "river" };
@@ -29,13 +37,18 @@ const STREET: Record<number, SpotInfo["street"]> = { 1: "preflop", 2: "flop", 3:
 export function buildSpot(
   gs: any,
   positions: Record<number, string>,
-  opts?: { heroSeat?: number; heroCards?: number[] }
+  opts?: { heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean }
 ): SpotInfo {
   const empty: SpotInfo = {
     ok: false, street: "pre-deal", heroCards: [], board: [], pot: 0, bb: 0,
-    toCall: 0, effStack: 0, heroPosition: "", heroIsOOP: true, activePlayers: 0
+    toCall: 0, effStack: 0, heroPosition: "", heroIsOOP: true, activePlayers: 0,
+    isTournament: false, ante: 0
   };
   if (!gs || gs.gi == null) return { ...empty, reason: "no gamestate" };
+
+  // Tournament context: gs.tri = tournament id (absent in cash); gs.av = ante.
+  const isTournament = gs.tri != null && gs.tri !== 0;
+  const ante = typeof gs.av === "number" ? gs.av : 0;
 
   const seats: any[] = gs.s || [];
   const m = gs.m || {};
@@ -105,6 +118,14 @@ export function buildSpot(
     effStack: minStack,
     heroPosition: pos,
     heroIsOOP,
-    activePlayers: active
+    activePlayers: active,
+    isTournament,
+    tournamentId: isTournament ? gs.tri : undefined,
+    ante,
+    heroRole: opts?.heroRole,
+    villainPos: opts?.villainPos,
+    potType: opts?.potType,
+    heroContinued: opts?.heroContinued,
+    villainContinued: opts?.villainContinued
   };
 }

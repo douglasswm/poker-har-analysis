@@ -92,6 +92,12 @@
     latestGs: null,  // latest raw GameState (for the engine)
     advice: null,    // latest recommendation
     unit: "usd",     // "usd" | "bb" display unit
+    tourney: {},     // tournamentId -> { name, pko, playersLeft, paidSpots }
+    worker: null,    // off-main-thread solver Web Worker
+    workerFailed: false,
+    solveSeq: 0,         // monotonic solve request id
+    latestSolveId: 0,    // newest request (older responses are ignored)
+    solveInFlight: null, // id of the request currently computing in the worker
     bbv: 2,          // big-blind value in chip units (from GameState)
     moneyType: null, // currency money-type id (from BalancesUpdate)
     heroSel: "auto", // "auto" or a seat index (as string)
@@ -153,6 +159,23 @@
             if (key !== state.lastAdviceKey) { state.lastAdviceKey = key; runAdvice(true); }
           }
         }
+      }
+      // Tournament context (PKO?, players left, paid spots) for advisory flags.
+      if (ft === "LobbyTournamentInfo" && frame.json.info && frame.json.info.i != null) {
+        const ti2 = frame.json.info;
+        state.tourney[ti2.i] = {
+          name: ti2.n || "",
+          pko: /PKO/i.test(ti2.ptn || "") || !!ti2.bupk || (ti2.bkv > 0),
+          playersLeft: typeof ti2.np === "number" ? ti2.np : null,
+          paidSpots: typeof ti2.npzp === "number" ? ti2.npzp : null
+        };
+      }
+      if (ft === "PlayerEndTournamentNotification" && frame.json.tournament && frame.json.tournament.i != null) {
+        const tt = frame.json.tournament;
+        const cur = state.tourney[tt.i] || {};
+        cur.pko = cur.pko || /PKO/i.test(tt.ptn || "") || !!tt.bupk || (tt.bkv > 0);
+        if (cur.name == null) cur.name = tt.n || "";
+        state.tourney[tt.i] = cur;
       }
       // Authoritative table seat count (max players) when joining/viewing a table.
       const info = frame.json.info || frame.json;
@@ -308,6 +331,8 @@
   function closeOverlay() {
     if (els && els.root) els.root.remove();
     els = null;
+    if (state.worker) { try { state.worker.terminate(); } catch (e) {} state.worker = null; }
+    state.solveInFlight = null;
     showLauncher();
   }
 
@@ -384,23 +409,55 @@
     return out;
   }
 
-  // Run the advisor. When `auto` it runs silently (no "Solving…" flicker) for
-  // the hero's current decision; manual (⚡) advises the hero's active hand or,
-  // if none, the latest frame.
+  // (Re)create the off-main-thread solver worker. Returns null if unavailable
+  // (e.g. CSP), in which case we fall back to a synchronous main-thread solve.
+  function ensureWorker() {
+    if (state.worker) return state.worker;
+    if (state.workerFailed) return null;
+    try {
+      if (typeof Worker === "undefined" || typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.getURL) {
+        state.workerFailed = true; return null;
+      }
+      const w = new Worker(chrome.runtime.getURL("src/engine.worker.js"));
+      w.onmessage = onWorkerMessage;
+      w.onerror = function () { state.workerFailed = true; try { w.terminate(); } catch (e) {} state.worker = null; };
+      state.worker = w;
+      return w;
+    } catch (e) { state.workerFailed = true; return null; }
+  }
+  function restartWorker() {
+    if (state.worker) { try { state.worker.terminate(); } catch (e) {} state.worker = null; }
+    return ensureWorker();
+  }
+  function onWorkerMessage(ev) {
+    const d = (ev && ev.data) || {};
+    if (d.id !== state.latestSolveId) return;   // a newer request superseded this
+    state.solveInFlight = null;
+    if (!els) return;
+    if (d.error) {
+      if (!state.advice) els.advice.innerHTML = '<div class="tengan-empty">Engine error: ' + escapeHtml(String(d.error)) + "</div>";
+      return;
+    }
+    state.advice = d.out;
+    renderAdvice();
+  }
+
+  // Run the advisor. When `auto` it runs silently for the hero's current
+  // decision; manual (⚡) advises the hero's active hand or the latest frame.
+  // The solve runs in a Web Worker (off the main thread) so multi-second CFR
+  // solves never freeze the HUD; falls back to a synchronous solve if needed.
   function runAdvice(auto) {
     if (!els) return;
     if (!window.TenganEngine) {
       if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Engine bundle not loaded.</div>';
       return;
     }
-    // Prefer the frame where the hero is actually in the hand.
     const useHeroGs = (state.heroSel === "auto") && state.heroGs;
     const gs = useHeroGs ? state.heroGs : state.latestGs;
     if (!gs) {
       if (!auto) els.advice.innerHTML = '<div class="tengan-empty">No hand captured yet — sit at a table.</div>';
       return;
     }
-    // Hero override: prefer the captured hero info for the hero-active frame.
     let opts = { iterations: 350 };
     if (useHeroGs && state.heroInfo) {
       opts.heroSeat = state.heroInfo.seat;
@@ -408,12 +465,59 @@
     } else {
       opts = Object.assign(opts, resolveHero());
     }
+    if (state.hand && state.hand.preflopAggressor != null && opts.heroSeat != null) {
+      opts.heroRole = (opts.heroSeat === state.hand.preflopAggressor) ? "aggressor" : "caller";
+    }
+    // Primary villain's position + pot type, for the position-aware range-builder.
+    if (state.hand && state.hand.seats && opts.heroSeat != null) {
+      const seats = state.hand.seats;
+      const agg = state.hand.preflopAggressor;
+      let villSeat = (agg != null && agg !== opts.heroSeat) ? agg : null;
+      if (villSeat == null) {
+        const o = seats.find(function (s) { return !s.folded && s.seat !== opts.heroSeat && s.position; });
+        if (o) villSeat = o.seat;
+      }
+      const vs = seats.find(function (s) { return s.seat === villSeat; });
+      if (vs && vs.position) opts.villainPos = vs.position;
+      let raises = 0;
+      for (const a of (state.hand.actions || [])) if (a.street === "preflop" && a.action === "raise") raises++;
+      opts.potType = raises >= 2 ? "3bet" : raises === 1 ? "srp" : "limped";
+
+      // Did a player call a bet on a postflop street earlier than the current
+      // one? (their range narrows to hands that continued — drops air)
+      const ORD = { preflop: 0, flop: 1, turn: 2, river: 3 };
+      const cur = ORD[state.hand.street] != null ? ORD[state.hand.street] : 9;
+      const calledEarlier = function (seat) {
+        for (const a of (state.hand.actions || [])) {
+          const o = ORD[a.street] != null ? ORD[a.street] : 9;
+          if (a.seat === seat && a.action === "call" && o >= 1 && o < cur) return true;
+        }
+        return false;
+      };
+      opts.heroContinued = calledEarlier(opts.heroSeat);
+      if (villSeat != null) opts.villainContinued = calledEarlier(villSeat);
+    }
+
+    const id = ++state.solveSeq;
+    state.latestSolveId = id;
+    const positions = positionsMap();
+    let w = ensureWorker();
+    if (w) {
+      opts.solveTurn = true;                         // safe off-thread (turn CFR is multi-second)
+      if (state.solveInFlight) w = restartWorker();  // cancel a stale in-flight solve
+      if (w) {
+        state.solveInFlight = id;
+        if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
+        try { w.postMessage({ id: id, gs: gs, positions: positions, opts: opts }); return; }
+        catch (e) { state.workerFailed = true; state.worker = null; }
+      }
+    }
+    // Synchronous fallback (no worker): keep turn on the fast heuristic.
     if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
     setTimeout(function () {
-      try {
-        state.advice = window.TenganEngine.recommend(gs, positionsMap(), opts);
-        renderAdvice();
-      } catch (e) {
+      if (id !== state.latestSolveId) return;
+      try { state.advice = window.TenganEngine.recommend(gs, positions, opts); renderAdvice(); }
+      catch (e) {
         if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Engine error: ' +
           escapeHtml(String((e && e.message) || e)) + "</div>";
       }
@@ -482,10 +586,36 @@
       '<span class="' + (state.unit === "usd" ? "on" : "") + '">$</span>' +
       '<span class="' + (state.unit === "bb" ? "on" : "") + '">bb</span></span>';
 
+    // Tournament advisory strip: push/fold mode, PKO bounty, pay-jump proximity.
+    let mttHtml = "";
+    const sp = out.spot;
+    if (sp && sp.isTournament) {
+      const parts = [];
+      if (r.note && r.note.indexOf("push/fold") >= 0) parts.push(r.note);
+      const tc = state.tourney && state.tourney[sp.tournamentId];
+      if (tc && tc.pko) parts.push("PKO: call jams a touch wider (bounties)");
+      if (tc && tc.playersLeft != null && tc.paidSpots != null &&
+          tc.playersLeft <= tc.paidSpots + 3 && tc.playersLeft >= tc.paidSpots) {
+        parts.push("Near pay jump: tighten marginal calls");
+      }
+      if (parts.length) mttHtml = '<div class="tg-mtt">' + parts.map(escapeHtml).join(" · ") + "</div>";
+    }
+
+    // Source badge: tells the user which engine produced the advice (a true CFR
+    // solve + its exploitability, a heuristic, or a multiway approximation).
+    let srcHtml = "";
+    if (r.note && !(sp && sp.isTournament && r.note.indexOf("push/fold") >= 0)) {
+      const cls = /CFR|solve/i.test(r.note) ? "good"
+        : /approximate|multiway|heuristic/i.test(r.note) ? "warn" : "muted";
+      srcHtml = '<div class="tg-srcnote ' + cls + '">' + escapeHtml(r.note) + "</div>";
+    }
+
     els.advice.innerHTML =
       '<div class="tengan-adv-head">' + escapeHtml(headline) + toggle + "</div>" +
       (r.detail ? '<div class="tengan-adv-detail">' + escapeHtml(r.detail) + "</div>" : "") +
-      actionsHtml;
+      mttHtml +
+      actionsHtml +
+      srcHtml;
 
     const tg = els.advice.querySelector("#tg-unit-toggle");
     if (tg) tg.addEventListener("click", function () {
@@ -528,7 +658,7 @@
     const facing = (sp.street === "preflop" && sp.toCall > sp.bb) ? "raise" : "open";
     const stackBB = sp.bb > 0 ? sp.effStack / sp.bb : 100;
     let g;
-    try { g = window.TenganEngine.preflopGrid(posLabel, facing, stackBB); }
+    try { g = window.TenganEngine.preflopGrid(posLabel, facing, stackBB, !!sp.isTournament); }
     catch (e) { els.grid.innerHTML = ""; return; }
 
     // Hero's current hand → highlight that cell in the grid.
@@ -563,8 +693,12 @@
       (L.check > 0.004 ? leg("check", "Check", L.check) : "") +
       leg("fold", "Fold", L.fold) + "</div>";
 
+    const jam = !!sp.isTournament && stackBB <= 25;
+    const modeLabel = jam
+      ? (facing === "raise" ? "call jam" : "open-jam")
+      : (facing === "raise" ? "vs raise" : "RFI");
     const hdr = '<div class="tg-rangehdr">' + escapeHtml(posLabel) + " · " +
-      (facing === "raise" ? "vs raise" : "RFI") + " · " + Math.round(stackBB) + "bb</div>";
+      modeLabel + " · " + Math.round(stackBB) + "bb" + (jam ? " · MTT" : "") + "</div>";
 
     els.grid.innerHTML = hdr + '<div class="tg-grid">' + cellsHtml + "</div>" + legend;
   }

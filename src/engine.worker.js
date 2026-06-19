@@ -1964,4 +1964,17 @@
   };
   globalThis.TenganEngine = TenganEngine;
   var src_default = TenganEngine;
+
+  // engine/src/worker.ts
+  var ctx = self;
+  ctx.onmessage = (e) => {
+    const msg = e && e.data || {};
+    const { id, gs, positions, opts } = msg;
+    try {
+      const out = src_default.recommend(gs, positions, opts);
+      ctx.postMessage({ id, out });
+    } catch (err) {
+      ctx.postMessage({ id, error: String(err && err.message || err) });
+    }
+  };
 })();

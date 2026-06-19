@@ -20,10 +20,10 @@ const TenganEngine = {
   recommend(
     gs: any,
     positions: Record<number, string>,
-    opts?: { iterations?: number; heroSeat?: number; heroCards?: number[] }
+    opts?: { iterations?: number; turnIters?: number; solveTurn?: boolean; heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean }
   ) {
-    const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards });
-    return { spot, recommendation: advise(spot, { iterations: opts?.iterations }) };
+    const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued });
+    return { spot, recommendation: advise(spot, { iterations: opts?.iterations, turnIters: opts?.turnIters, solveTurn: opts?.solveTurn }) };
   }
 };
 

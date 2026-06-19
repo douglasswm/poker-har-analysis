@@ -118,6 +118,15 @@
 .tg-unit span { display: inline-block; padding: 1px 7px; color: #7d8c99; background: #131c25; }
 .tg-unit span.on { background: #2ecc8f; color: #06231a; }
 .tengan-adv-detail { color: #aebecb; margin: 4px 0; }
+.tg-srcnote { margin: 5px 0 1px; font-size: 9.5px; font-weight: 600; letter-spacing: .02em; }
+.tg-srcnote.good { color: #2ecc8f; }
+.tg-srcnote.warn { color: #ffcf66; }
+.tg-srcnote.muted { color: #67768a; }
+.tg-mtt {
+  margin: 4px 0; padding: 3px 8px; font-size: 10px; font-weight: 600;
+  color: #ffd84d; background: rgba(255,216,77,.08);
+  border: 1px solid rgba(255,216,77,.3); border-radius: 5px;
+}
 .tengan-acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
 .tengan-act {
   background: #14261c; border: 1px solid #2c4a37; border-radius: 7px;

@@ -25,5 +25,11 @@
       "run_at": "document_start",
       "all_frames": true
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/engine.worker.js"],
+      "matches": ["*://*.stake.com/*", "*://*.skp223817.org/*"]
+    }
   ]
 }
