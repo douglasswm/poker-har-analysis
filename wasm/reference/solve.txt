@@ -1,0 +1,18 @@
+set_pot 6
+set_effective_stack 100
+set_board Qs,Jh,2h
+set_range_oop AA,KK,QQ,JJ,TT,AKs,AQs,KQs,QJs,JTs,AKo,AQo,KQo
+set_range_ip AA,KK,QQ,JJ,TT,99,AKs,AQs,AJs,KQs,QJs,JTs,T9s,AKo,AQo,KJo
+set_bet_sizes oop,flop,bet,33,75
+set_bet_sizes ip,flop,bet,33,75
+set_bet_sizes oop,flop,allin
+set_bet_sizes ip,flop,allin
+set_allin_threshold 0.67
+build_tree
+set_thread_num 1
+set_accuracy 0
+set_max_iteration 60
+set_print_interval 100
+set_use_isomorphism 1
+start_solve
+set_dump_rounds 1

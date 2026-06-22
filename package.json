@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "node scripts/build.mjs --watch",
     "build": "node scripts/build.mjs",
-    "test": "node scripts/test.mjs && node test/parser.test.js",
+    "test": "node scripts/test.mjs && node test/parser.test.js && node scripts/parity.mjs",
+    "parity": "node scripts/parity.mjs",
+    "parity:gen": "node scripts/parity.mjs --gen",
     "typecheck": "tsc -p engine/tsconfig.json --noEmit"
   },
   "devDependencies": {

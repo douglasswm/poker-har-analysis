@@ -11,11 +11,52 @@ run off the main thread, and the flop has a native-TexasSolver solve-server.
 
 | Street | Engine | Type | Latency |
 |---|---|---|---|
-| Preflop | hand-typed chart + Nash push/fold (≤25bb MTT) | lookup | instant |
+| Preflop | hand-typed chart + Nash push/fold (≤25bb MTT) + **iso-raise over limpers** | lookup | instant |
 | Flop | range-aware polar heuristic (in-engine) **+** native TexasSolver via local solve-server | heuristic / true (server) | instant / seconds (server) |
 | Turn | two-street (turn+river) DCFR, range vs range | **true GTO** | ~7–9s, off-thread |
 | River | single-street DCFR, range vs range | **true GTO** | ~0.4s, off-thread |
-| Multiway (3+) | polar heuristic, flagged "approximate" | heuristic | instant |
+| Multiway (3+) | **equity-vs-field heuristic** (Monte-Carlo vs N opponents) | heuristic | ~0.1–0.3s, off-thread |
+
+**Preflop — iso over limpers (real-game lever for 9-max micro).** A limped pot
+(limpers in front, no raise) routes to `isoAdvice`: value hands isolate for value
+with limp-aware sizing (3bb + 1bb/limper), small pairs and suited connectors
+overlimp to set-mine / see a cheap multiway flop, the BB iso-raises value and
+checks the rest, and trash folds. The iso range tightens as limpers grow. The
+jam-vs-raise decision uses the **hero's own stack** (not the table minimum — a lone
+short-stacked limper no longer makes a deep hero "jam").
+
+**Range grid is now a true GTO solved-range view postflop (heads-up).** The 13×13
+matrix shows the *solved range's* strategy: each class blends the per-combo
+bet/check/call/raise/fold frequencies from the actual solve (in-engine CFR or
+native TexasSolver), with out-of-range classes faded and the hero's hand
+highlighted. Preflop keeps the chart grid and now picks the right facing —
+RFI / vs-raise / **iso-vs-limpers**. Multiway postflop shows no solved grid
+(labeled "preflop entry range — no postflop solve here"), because multiway isn't
+GTO-solvable. So the grid is *true GTO where truth exists*, and honestly marked
+where it doesn't.
+
+**Auto-advise fires on the real actor (`m.ai`), not the hero-seat marker
+(`m.ci`).** `m.ci` is the local-player seat (constant per hand), so the old gate
+`m.ci === heroSeat` was always true and the HUD recomputed advice on nearly every
+frame — flickering through mid-action reads before settling. Gating on `m.ai`
+(the seat actually to act) cut auto-advice recomputes ~54% on the live logs (244 →
+112), still covering every genuine decision (51/51 hands, zero dropped).
+
+**Effective stack is hero-relative (postflop sizing fix).** Bet sizing, the
+all-in cap, and SPR now use `min(heroStack, deepest-opponent stack)` instead of
+the table minimum. Previously a lone short stack in the pot made every normal
+50–66%-pot bet get mislabeled "all-in" and undersized to the shortest stack
+(seen in the live logs: deep 138–426bb hero hands reading "ALL-IN"). A genuinely
+short hero still correctly jams.
+
+**Multiway — equity vs the field.** 3+ way pots compute Monte-Carlo equity where
+hero must beat *every* opponent (not a heads-up range), then act off equity
+relative to a fair share `1/(N+1)`: value-bet only when clearly ahead of the field
+(overpairs/TPTK/sets, scaled by player count), pot-control medium hands, semi-bluff
+draws at low frequency, and call/fold facing a bet on field-equity vs price. Pure
+bluffing is suppressed (few of N opponents fold). This is the path for ~84% of
+real 9-max flops — still an approximation (multiway is not GTO-solvable by any
+solver), but a principled one.
 
 - **River / turn** build the hero's *and* villain's full ranges, run DCFR to
   equilibrium, and read the strategy for the hero's actual hand. Not equity, not

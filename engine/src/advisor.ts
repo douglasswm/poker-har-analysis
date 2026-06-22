@@ -5,7 +5,7 @@
 // Always returns the instant math alongside any solver output.
 import { SpotInfo } from "./spot.js";
 import { spotMath, callFracOfPot, potOddsEquity } from "./gtomath.js";
-import { preflopAdvice, Pos, toChartPos, rangeAtShift, expandRange, GENERIC_CONTINUE, GENERIC_CBET, GENERIC_CALL, THREEBET, THREEBET_CALL, handCode } from "./ranges.js";
+import { preflopAdvice, isoAdvice, Pos, toChartPos, rangeAtShift, expandRange, GENERIC_CONTINUE, GENERIC_CBET, GENERIC_CALL, THREEBET, THREEBET_CALL, handCode, rangeGrid, RangeGrid } from "./ranges.js";
 import { rankOf, suitOf, Combo } from "./cards.js";
 import { handCategory, evaluate7 } from "./evaluator.js";
 import { RiverSolver } from "./cfr.js";
@@ -48,6 +48,7 @@ export interface Recommendation {
   math?: ReturnType<typeof spotMath>;
   exploitabilityPct?: number;
   note?: string;
+  rangeGrid?: RangeGrid;            // postflop: 13x13 solved-range strategy (HU only)
 }
 
 export function advise(spot: SpotInfo, opts?: { iterations?: number; turnIters?: number; solveTurn?: boolean }): Recommendation {
@@ -63,11 +64,20 @@ export function advise(spot: SpotInfo, opts?: { iterations?: number; turnIters?:
   }
 
   const stackBB = spot.bb > 0 ? spot.effStack / spot.bb : 100;
+  // Preflop jam-vs-raise is bounded by HERO's own stack, not the table minimum
+  // (a lone short-stacked limper must not make a deep hero "jam").
+  const preStackBB = spot.bb > 0 ? (spot.heroStack || spot.effStack) / spot.bb : 100;
 
   // ---- Preflop: instant chart (with short-stack shoves) ----
   if (spot.street === "preflop") {
-    const facing = spot.toCall > spot.bb ? "raise" : "open";
-    const adv = preflopAdvice(spot.heroCards[0], spot.heroCards[1], toChartPos(spot.heroPosition || "BTN"), facing, stackBB, spot.isTournament);
+    const chartPos = toChartPos(spot.heroPosition || "BTN");
+    const raised = spot.preflopRaised ?? (spot.toCall > spot.bb);
+    const limpers = spot.limpers || 0;
+    // Limped pot (limpers in front, no raise): iso-raise for value, overlimp
+    // speculative hands, fold trash. Otherwise the standard open / vs-raise chart.
+    const adv = (!raised && limpers >= 1)
+      ? isoAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, limpers, preStackBB, spot.isTournament)
+      : preflopAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, raised ? "raise" : "open", preStackBB, spot.isTournament);
     // Map the (possibly mixed) preflop strategy to action bars for the graph.
     const actions: ActionRec[] = adv.options.map((o) => ({
       kind: o.action === "allin" ? "raise" : o.action,
@@ -123,6 +133,59 @@ function narrowContinue(combos: Combo[], priorBoard: number[]): Combo[] {
   return out.length >= 8 ? out : combos; // never prune to a degenerate range
 }
 
+// Highest paired rank in a hand (the made pair / set rank), else -1.
+function pairRankOf(cards: number[]): number {
+  const counts = new Array(13).fill(0);
+  for (const c of cards) counts[rankOf(c)]++;
+  let best = -1;
+  for (let r = 0; r < 13; r++) if (counts[r] >= 2) best = r;
+  return best;
+}
+
+// Polarize a range that has *barreled* (bet 2+ streets): keep value (two pair+,
+// top pair / overpair) + strong draws + a balanced slice of air as bluffs, and
+// drop middle/bottom-pair "give-up" hands that would have checked. This makes a
+// double-barrel range correctly stronger/polarized than the flop range.
+function narrowBarrel(combos: Combo[], priorBoard: number[], barrels: number): Combo[] {
+  if (barrels < 2 || priorBoard.length < 3) return combos;
+  const topBoard = Math.max(...priorBoard.map(rankOf));
+  const value: Combo[] = [], draws: Combo[] = [], air: Combo[] = [];
+  for (const c of combos) {
+    const all = [c.a, c.b, ...priorBoard];
+    const cat = handCategory(all).cat;
+    if (cat >= 2 || (cat === 1 && pairRankOf(all) >= topBoard)) value.push(c);  // value + top pair/overpair
+    else if (hasStrongDraw(all)) draws.push(c);                                  // semi-bluff barrels
+    else if (cat === 0) air.push(c);                                             // pure air -> bluff candidate
+    // cat === 1 middle/bottom pair: give-up, dropped
+  }
+  // Keep a balanced bluff slice (~0.8x the value count) so we don't over- or
+  // under-represent bluffs after dropping the give-ups.
+  const bluffN = Math.min(air.length, Math.max(0, Math.round(value.length * 0.8)));
+  const keptAir: Combo[] = [];
+  if (bluffN > 0) {
+    const step = air.length / bluffN;
+    for (let x = 0; x < air.length && keptAir.length < bluffN; x += step) keptAir.push(air[Math.floor(x)]);
+  }
+  const out = value.concat(draws, keptAir);
+  return out.length >= 8 ? out : combos;
+}
+
+// Build hero + villain combo ranges for a postflop spot: position/pot ranges,
+// then narrow by the actual line — caller continue-filter and aggressor barrel
+// polarization. Single source of truth for both in-engine solves and the native
+// request serialization.
+function builtRanges(spot: SpotInfo): { heroR: Combo[]; villR: Combo[] } {
+  const { hero, vill } = riverRanges(spot);
+  const prior = spot.board.slice(0, spot.board.length - 1);
+  let heroR = expandRange(hero, spot.board);
+  let villR = expandRange(vill, spot.board);
+  if (spot.heroContinued) heroR = narrowContinue(heroR, prior);
+  if (spot.villainContinued) villR = narrowContinue(villR, prior);
+  if ((spot.heroBarrels || 0) >= 2) heroR = narrowBarrel(heroR, prior, spot.heroBarrels!);
+  if ((spot.villainBarrels || 0) >= 2) villR = narrowBarrel(villR, prior, spot.villainBarrels!);
+  return { heroR, villR };
+}
+
 // Ensure hero's actual combo is present in a range (so the solver can read it).
 function ensureCombo(combos: Combo[], cards: number[]): Combo[] {
   const [a, b] = cards;
@@ -152,7 +215,7 @@ function capRange(combos: Combo[], max: number, keep?: number[]): Combo[] {
 // from UTG, wide from the button), and 3-bet pots use much tighter, polarized
 // ranges. Far more accurate than one generic range regardless of who raised
 // from where. The caller holds a wide continuing range.
-function riverRanges(spot: SpotInfo): { hero: string[]; vill: string[] } {
+export function riverRanges(spot: SpotInfo): { hero: string[]; vill: string[] } {
   const heroPos = toChartPos(spot.heroPosition || "BTN");
   const villPos = toChartPos(spot.villainPos || "BTN");
   const threeBet = spot.potType === "3bet";
@@ -170,20 +233,31 @@ function riverRanges(spot: SpotInfo): { hero: string[]; vill: string[] } {
   return { hero, vill };
 }
 
+// The final expanded combo ranges for a postflop spot (position/pot ranges +
+// continue-filter), as {oop, ip}. Used both by the in-engine solves and to
+// serialize ranges for the native solve-server so the two agree.
+export function solveCombos(spot: SpotInfo): { oop: Combo[]; ip: Combo[] } {
+  let { heroR, villR } = builtRanges(spot);
+  heroR = ensureCombo(heroR, spot.heroCards);
+  return spot.heroIsOOP ? { oop: heroR, ip: villR } : { oop: villR, ip: heroR };
+}
+
+/// Build the 13x13 solved-range grid from a CFR root strategy (all combos).
+function gridFromRoot(rs: { actions: { kind: string; amount: number; allin?: boolean }[]; perCombo: { combo: { a: number; b: number }; freqs: number[] }[] }): RangeGrid {
+  const kinds = rs.actions.map((a) => (a.allin ? "allin" : a.kind));
+  const combos = rs.perCombo.map((pc) => ({ a: pc.combo.a, b: pc.combo.b, freqs: pc.freqs }));
+  return rangeGrid(kinds, combos);
+}
+
 // True GTO river: solve hero's full range vs villain's full range with DCFR,
 // then read the equilibrium strategy for hero's actual hand.
 function solveRiverRVR(spot: SpotInfo, iterations: number): Recommendation {
   const heroIsOOP = spot.heroIsOOP;
   const heroPlayer: 0 | 1 = heroIsOOP ? 0 : 1;
-  const { hero, vill } = riverRanges(spot);
   const RIVER_CAP = 220;
-  const priorBoard = spot.board.slice(0, spot.board.length - 1); // turn board (what they called on)
-  let heroR = expandRange(hero, spot.board);
-  let villR = expandRange(vill, spot.board);
-  if (spot.heroContinued) heroR = narrowContinue(heroR, priorBoard);
-  if (spot.villainContinued) villR = narrowContinue(villR, priorBoard);
-  const heroRange = ensureCombo(capRange(heroR, RIVER_CAP, spot.heroCards), spot.heroCards);
-  const villRange = capRange(villR, RIVER_CAP);
+  const built = builtRanges(spot); // position/pot ranges + continue & barrel narrowing
+  const heroRange = ensureCombo(capRange(built.heroR, RIVER_CAP, spot.heroCards), spot.heroCards);
+  const villRange = capRange(built.villR, RIVER_CAP);
   const toCall = spot.toCall;
   const potBeforeBet = toCall > 0 ? Math.max(1, spot.pot - toCall) : spot.pot;
 
@@ -191,7 +265,10 @@ function solveRiverRVR(spot: SpotInfo, iterations: number): Recommendation {
     board: spot.board, pot: potBeforeBet, effStack: Math.max(1, spot.effStack),
     oop: heroIsOOP ? heroRange : villRange,
     ip: heroIsOOP ? villRange : heroRange,
-    betSizes: [0.5, 1.0], raiseSizes: [1.0], raiseCap: 1, allowAllIn: true
+    // Wider river bet tree (33/75/100% pot + a 75% raise + allin). The river solve
+    // is instant, so the extra sizes are ~free and sharpen sizing — benched at
+    // ~0.6s with exploitability ~0.01% (vs ~0.10% on the old 2-size tree).
+    betSizes: [0.33, 0.75, 1.0], raiseSizes: [0.75], raiseCap: 1, allowAllIn: true
   };
   const rootOpts = toCall > 0
     ? { actor: heroPlayer, cOOP: heroIsOOP ? 0 : toCall, cIP: heroIsOOP ? toCall : 0, raises: 0, prevCheck: false }
@@ -215,6 +292,7 @@ function solveRiverRVR(spot: SpotInfo, iterations: number): Recommendation {
     detail: `River GTO solve — range vs range.`,
     top: actions[0], actions,
     exploitabilityPct: +exploitabilityPct.toFixed(2),
+    rangeGrid: gridFromRoot(rs),
     note: `True CFR solve · exploitability ${exploitabilityPct.toFixed(1)}%`
   };
 }
@@ -223,18 +301,13 @@ function solveRiverRVR(spot: SpotInfo, iterations: number): Recommendation {
 function solveTurnRVR(spot: SpotInfo, iterations: number): Recommendation {
   const heroIsOOP = spot.heroIsOOP;
   const heroPlayer: 0 | 1 = heroIsOOP ? 0 : 1;
-  const { hero, vill } = riverRanges(spot); // same role-based range classes
   // Cap range size so the (turn × ~44 rivers × river) tree stays tractable in
   // pure JS off-thread (~9-11s at 130). Full ranges (~185) would be ~20s — that
   // needs river-card isomorphism (the optimization TexasSolver uses) to speed up.
   const CAP = 130;
-  const priorBoard = spot.board.slice(0, spot.board.length - 1); // flop (what they called on)
-  let heroR = expandRange(hero, spot.board);
-  let villR = expandRange(vill, spot.board);
-  if (spot.heroContinued) heroR = narrowContinue(heroR, priorBoard);
-  if (spot.villainContinued) villR = narrowContinue(villR, priorBoard);
-  const heroRange = ensureCombo(capRange(heroR, CAP, spot.heroCards), spot.heroCards);
-  const villRange = capRange(villR, CAP);
+  const built = builtRanges(spot); // position/pot ranges + continue & barrel narrowing
+  const heroRange = ensureCombo(capRange(built.heroR, CAP, spot.heroCards), spot.heroCards);
+  const villRange = capRange(built.villR, CAP);
   const toCall = spot.toCall;
   const potBeforeBet = toCall > 0 ? Math.max(1, spot.pot - toCall) : spot.pot;
 
@@ -242,6 +315,9 @@ function solveTurnRVR(spot: SpotInfo, iterations: number): Recommendation {
     board: spot.board, pot: potBeforeBet, effStack: Math.max(1, spot.effStack),
     oop: heroIsOOP ? heroRange : villRange,
     ip: heroIsOOP ? villRange : heroRange,
+    // Turn stays single-size: it's the latency-bound street in pure JS (the
+    // turn×rivers×river tree), and benching showed a second turn/river size ~doubles
+    // the solve (~8s -> ~13s). For richer turn sizing use the native/WASM path.
     turnBetSizes: [0.66], riverBetSizes: [0.75], raiseCap: 1, allowAllIn: true
   };
   const rootOpts = toCall > 0
@@ -265,6 +341,7 @@ function solveTurnRVR(spot: SpotInfo, iterations: number): Recommendation {
     detail: `Turn GTO solve — range vs range (2-street).`,
     top: actions[0], actions,
     exploitabilityPct: +exploitabilityPct.toFixed(2),
+    rangeGrid: gridFromRoot(rs),
     note: `True CFR solve (turn+river) · exploit ${exploitabilityPct.toFixed(1)}%`
   };
 }
@@ -311,6 +388,56 @@ function heroEquity(hero: number[], board: number[], villRange: Combo[], samples
   return n ? (win + tie * 0.5) / n : 0.5;
 }
 
+// Monte-Carlo equity vs a FIELD of `nOpp` opponents (each an independent draw
+// from villRange). Hero only wins the pot if its hand beats *every* opponent; a
+// top tie splits. This is the multiway-correct equity — far lower than the
+// heads-up number, which is exactly why value/bluff thresholds must change with
+// the number of players.
+function heroEquityField(hero: number[], board: number[], villRange: Combo[], nOpp: number, samples: number): number {
+  const need = 5 - board.length;
+  if (need < 0 || !villRange.length || nOpp < 1) return 0.5;
+  const used0 = new Set([...hero, ...board]);
+  const deck: number[] = [];
+  for (let c = 0; c < 52; c++) if (!used0.has(c)) deck.push(c);
+  let score = 0, n = 0;
+  for (let s = 0; s < samples; s++) {
+    const used = new Set(used0);
+    const opps: Combo[] = [];
+    let ok = true;
+    for (let o = 0; o < nOpp; o++) {
+      let vc: Combo | null = null;
+      for (let tries = 0; tries < 16; tries++) {
+        const cand = villRange[(Math.random() * villRange.length) | 0];
+        if (!used.has(cand.a) && !used.has(cand.b)) { vc = cand; break; }
+      }
+      if (!vc) { ok = false; break; }
+      used.add(vc.a); used.add(vc.b); opps.push(vc);
+    }
+    if (!ok) continue;
+    const run: number[] = [];
+    let guard = 0;
+    while (run.length < need && guard < 400) {
+      const c = deck[(Math.random() * deck.length) | 0];
+      if (used.has(c) || run.indexOf(c) >= 0) { guard++; continue; }
+      run.push(c); used.add(c);
+    }
+    if (run.length < need) continue;
+    const hs = evaluate7([hero[0], hero[1], ...board, ...run]);
+    let maxV = -1, tiesAtTop = 0;
+    for (const vc of opps) {
+      const vs = evaluate7([vc.a, vc.b, ...board, ...run]);
+      if (vs > maxV) maxV = vs;
+    }
+    if (hs > maxV) score += 1;
+    else if (hs === maxV) {
+      for (const vc of opps) if (evaluate7([vc.a, vc.b, ...board, ...run]) === hs) tiesAtTop++;
+      score += 1 / (tiesAtTop + 1);
+    }
+    n++;
+  }
+  return n ? score / n : 0.5;
+}
+
 // Flop/turn action driven by real equity vs an assumed range (multi-street CFR
 // is too slow live). Outputs a concrete action with a Stake-style bet size.
 // Polar, GTO-shaped flop/turn advice (single-street, no live multi-street solve).
@@ -331,11 +458,18 @@ function flopTurnAdvice(spot: SpotInfo, math: ReturnType<typeof spotMath>): Reco
   const pot = spot.pot, bb = spot.bb;
   const wet = boardWetness(spot.board);
   const dryness = 1 - wet;
-  const spr = pot > 0 ? spot.effStack / pot : 10;
+  // Effective stack for sizing/commitment is hero-relative: hero can't bet more
+  // than their own stack, and can't be called for more than the deepest opponent
+  // holds. Using the table MINIMUM (spot.effStack) mislabeled normal bets as
+  // "all-in" and undersized them whenever any short stack was in the pot.
+  const heroStk = spot.heroStack && spot.heroStack > 0 ? spot.heroStack : spot.effStack;
+  const oppMax = spot.maxOppStack && spot.maxOppStack > 0 ? spot.maxOppStack : spot.effStack;
+  const commitStk = Math.min(heroStk, oppMax);   // most that can actually go in
+  const spr = pot > 0 ? commitStk / pot : 10;
   const lowSPR = spr <= 4;
   const role = spot.heroRole;                    // 'aggressor' | 'caller' | undefined
 
-  const eff = spot.effStack;
+  const eff = heroStk;                           // hero physically can't bet beyond this
   const cap = (a: ActionRec): ActionRec => {
     if (eff > 0 && a.amount != null && a.amount >= eff) { a.amount = eff; a.allin = true; }
     return a;
@@ -354,6 +488,55 @@ function flopTurnAdvice(spot: SpotInfo, math: ReturnType<typeof spotMath>): Reco
     heroEquity(spot.heroCards, spot.board, expandRange(codes, [...spot.board, ...spot.heroCards]), 1500);
 
   let actions: ActionRec[]; let top: ActionRec; let detail: string;
+
+  // ---- Multiway (3+ players): equity vs the FIELD, not a heads-up range ----
+  // The HU heuristic below would over-value hands; in a multiway pot the hand
+  // must beat every opponent, so we drive off field equity relative to a fair
+  // share (1/(N+1)). Value-bet only when clearly ahead of the field, bluff far
+  // less (more players to fold out), and call on price + draws.
+  const nOpp = Math.max(1, (spot.activePlayers || 2) - 1);
+  if (nOpp >= 2) {
+    const field = expandRange(GENERIC_CONTINUE, [...spot.board, ...spot.heroCards]);
+    const eq = heroEquityField(spot.heroCards, spot.board, field, nOpp, 1200);
+    const eqPct = Math.round(eq * 100);
+    const fair = 1 / (nOpp + 1);
+    const edge = eq / fair;                      // 1.0 = average share, 2.0 = double
+    const wayN = nOpp + 1;
+    if (spot.toCall > 0) {
+      const betFrac = callFracOfPot(spot.toCall, pot - spot.toCall || pot);
+      const need = potOddsEquity(betFrac);
+      const needPct = Math.round(need * 100);
+      if (eq >= 0.55 && edge >= 1.8) {           // clearly ahead of a multiway field -> raise value
+        top = raiseTo(0.7); actions = [top];
+        detail = `~${eqPct}% vs field (${wayN}-way) — raise for value.`;
+      } else if (eq >= need + 0.02) {
+        top = plain("call"); actions = [top];
+        detail = `~${eqPct}% vs ${needPct}% needed (${wayN}-way) — call.`;
+      } else if (draw && eq >= need * 0.85) {
+        top = plain("call"); actions = [top];
+        detail = `~${eqPct}% + draw (${wayN}-way) — call on odds.`;
+      } else {
+        top = plain("fold"); actions = [top];
+        detail = `~${eqPct}% < ${needPct}% needed (${wayN}-way) — fold.`;
+      }
+    } else if (eq >= 0.50 && edge >= 1.8 && cat >= 1) {  // made hand, well ahead of the field
+      top = bet(wet > 0.5 ? 0.66 : 0.5); actions = [top];
+      detail = `~${eqPct}% vs field (${wayN}-way) — value bet.`;
+    } else if (eq >= 0.38 && edge >= 1.5 && cat >= 1) {  // ahead with a made hand -> thin value/protect
+      top = bet(0.5); actions = [top];
+      detail = `~${eqPct}% vs field (${wayN}-way) — thin value / protection.`;
+    } else if (draw) {                            // semi-bluff a draw, but less often multiway
+      ({ actions, top } = mix(0.6, Math.min(0.55, 0.25 + 0.3 * wet)));
+      detail = `~${eqPct}% + draw (${wayN}-way) — semi-bluff some.`;
+    } else {                                      // pure bluffing multiway rarely works -> check
+      top = plain("check"); actions = [top];
+      detail = `~${eqPct}% vs field (${wayN}-way) — check (pot control, bluffs fold out few of ${nOpp}).`;
+    }
+    return {
+      headline: "", source: "equity", detail, bb, top, actions, math,
+      note: `Multiway (${wayN}-way) — equity vs ${nOpp} opponents (approximate, not a solve)`
+    };
+  }
 
   if (spot.toCall > 0) {
     // ---- Facing a bet: value-weighted villain range so we don't over-call ----

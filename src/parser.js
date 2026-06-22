@@ -63,17 +63,32 @@
       .filter(function (i) { return i >= 0; });
     if (occupied.length === 0) return positions;
 
-    const sb = m.sb;
-    const bb = m.bb;
-    if (sb != null) positions[sb] = "SB";
-    if (bb != null) positions[bb] = "BB";
-
-    // Button: explicit di if present, else seat before SB in occupied order.
+    // Blinds + button from meta when present. The stream sometimes omits the BB
+    // (and even SB) seat index mid-capture; derive the missing ones from the
+    // button (SB = seat after BTN, BB = the one after) so every seat still gets a
+    // position. Without this, a missing m.bb left the hero (and all non-blind
+    // seats) unlabeled — ~12% of observed hands had no positions at all.
+    let sb = m.sb;
+    let bb = m.bb;
     let btn = m.di;
+    // Derive the button from SB if the meta lacks it (seat before SB).
     if (btn == null && sb != null) {
       const sbPos = occupied.indexOf(sb);
       if (sbPos >= 0) btn = occupied[(sbPos - 1 + occupied.length) % occupied.length];
     }
+    // Derive missing blinds from the button (occupied clockwise order).
+    if (btn != null) {
+      const bp = occupied.indexOf(btn);
+      if (bp >= 0) {
+        if (sb == null) sb = occupied[(bp + 1) % occupied.length];
+        if (bb == null) bb = occupied[(bp + 2) % occupied.length];
+      }
+    } else if (sb != null && bb == null) {
+      const sp = occupied.indexOf(sb);
+      if (sp >= 0) bb = occupied[(sp + 1) % occupied.length];
+    }
+    if (sb != null) positions[sb] = "SB";
+    if (bb != null) positions[bb] = "BB";
     if (btn != null) positions[btn] = "BTN";
 
     // Remaining seats (between BB and BTN, in action order) get standard names.

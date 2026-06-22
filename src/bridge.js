@@ -98,6 +98,9 @@
     solveSeq: 0,         // monotonic solve request id
     latestSolveId: 0,    // newest request (older responses are ignored)
     solveInFlight: null, // id of the request currently computing in the worker
+    nativeSolve: false,  // route postflop spots to the native TexasSolver solve-server
+    solveDepth: "normal",// native solve depth preset: fast | normal | deep
+    solveThreads: 4,     // native solver thread count
     bbv: 2,          // big-blind value in chip units (from GameState)
     moneyType: null, // currency money-type id (from BalancesUpdate)
     heroSel: "auto", // "auto" or a seat index (as string)
@@ -107,11 +110,35 @@
     maxSeatsLocked: false,     // true once mp is known from table info
     heroGs: null,              // latest GameState where the hero is in the hand
     heroInfo: null,            // { seat, cardIds } captured with heroGs
-    lastAdviceKey: null        // debounce key for auto-advise
+    lastAdviceKey: null,       // debounce key for auto-advise
+    diag: [],                  // rolling diagnostics event log [{t, msg}]
+    connSeen: {},              // socket connection -> frame count
+    lastNative: null,          // last native-solver outcome string
+    _frontSeen: false,         // logged the first 'front' frame yet?
+    _lastDiagAdvice: null      // dedupe key for advice diag lines
   };
+  const DIAG_MAX = 80;         // keep the last N diagnostics events
 
   const RANK_LABELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const SUIT_LABELS = ["♣", "♦", "♥", "♠"];
+
+  // Append a timestamped line to the rolling diagnostics log (for live debugging).
+  function logDiag(msg) {
+    state.diag.push({ t: Date.now(), msg: String(msg) });
+    if (state.diag.length > DIAG_MAX) state.diag.shift();
+  }
+  function clockTs(ms) {
+    const d = new Date(ms);
+    const p = (n, w) => String(n).padStart(w || 2, "0");
+    return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + "." + p(d.getMilliseconds(), 3);
+  }
+  // 1-indexed to match the stream's m.r (1=preflop … 4=river), like the parser.
+  const STREET_NAMES = { 1: "preflop", 2: "flop", 3: "turn", 4: "river", 5: "showdown" };
+  // Card id = rank*4 + suit (rank 0=2..12=A, suit 0=c,1=d,2=h,3=s).
+  function cardsToText(ids) {
+    if (!ids || !ids.length) return "—";
+    return ids.map((id) => (id == null ? "?" : RANK_LABELS[id >> 2] + SUIT_LABELS[id & 3])).join(" ");
+  }
 
   function connectionLabel(url) {
     if (/\/front/.test(url)) return "front";
@@ -123,6 +150,8 @@
   function ingest(frame) {
     frame.conn = connectionLabel(frame.url);
     frame.type = (frame.json && (frame.json.t || frame.json.type)) || "(raw)";
+    state.connSeen[frame.conn] = (state.connSeen[frame.conn] || 0) + 1;
+    if (frame.conn === "front" && !state._frontSeen) { state._frontSeen = true; logDiag("front (game) socket connected"); }
     state.frames.push(frame);
     if (state.frames.length > MAX_FRAMES) state.frames.shift();
 
@@ -141,6 +170,15 @@
         const sl = (gs.s || []).length;
         if (!state.maxSeatsLocked && sl) state.maxSeats = sl;
 
+        // Diagnostics: log a line when the hand or street changes.
+        const r0 = (gs.m && gs.m.r);
+        const hk0 = gs.gi + "|" + r0;
+        if (hk0 !== state._lastHandKey) {
+          state._lastHandKey = hk0;
+          logDiag("hand " + (gs.gi != null ? gs.gi : "?") + " · street=" + (STREET_NAMES[r0] || r0) +
+            " · seats=" + sl + "/" + state.maxSeats);
+        }
+
         // Track the frame where the hero is in the hand (for advice), and
         // auto-advise the moment it's the hero's turn on a live street.
         const heroS = summary && summary.seats.find(function (s) {
@@ -148,15 +186,24 @@
         });
         if (heroS) {
           state.heroGs = gs;
+          const heroKey = gs.gi + ":" + heroS.seat;
+          if (heroKey !== state._lastHeroKey) {
+            state._lastHeroKey = heroKey;
+            logDiag("hero detected · seat " + heroS.seat + " · cards " + cardsToText(heroS.cardIds));
+          }
           state.heroInfo = { seat: heroS.seat, cardIds: heroS.cardIds.slice() };
           const m = gs.m || {};
           const live = m.r >= 1 && m.r <= 4;
-          const heroToAct = live && !heroS.folded && m.ci === heroS.seat;
+          // `m.ai` is the seat whose turn it is NOW. (`m.ci` is the local-player /
+          // hero seat marker — constant per hand — so gating on it fired on every
+          // frame and produced flickery, mid-action advice. Only advise when the
+          // action has genuinely reached the hero.)
+          const heroToAct = live && !heroS.folded && m.ai === heroS.seat;
           if (heroToAct) {
             let sumBets = 0;
             for (const s of (gs.s || [])) if (s && typeof s.b === "number") sumBets += s.b;
             const key = gs.gi + ":" + m.r + ":" + sumBets;
-            if (key !== state.lastAdviceKey) { state.lastAdviceKey = key; runAdvice(true); }
+            if (key !== state.lastAdviceKey) { state.lastAdviceKey = key; logDiag("hero to act · " + (STREET_NAMES[m.r] || m.r) + " · auto-advise"); runAdvice(true); }
           }
         }
       }
@@ -192,6 +239,8 @@
 
   // Expose ingest to the message handlers above.
   window.__tenganIngest = ingest;
+  logDiag("HUD content script loaded · " + (location ? location.host : "?") +
+    " · engine=" + (window.TenganEngine ? "yes" : "no") + " parser=" + (window.PokerParser ? "yes" : "no"));
 
   // ---------------------------------------------------------------------------
   // Overlay UI
@@ -245,7 +294,8 @@
             <span class="tg-spacer"></span>
             <button class="tg-btn" id="tengan-pause" title="Pause/resume">Pause</button>
             <button class="tg-btn" id="tengan-clear" title="Clear">Clear</button>
-            <button class="tg-btn" id="tengan-export" title="Export JSON">Export</button>
+            <button class="tg-btn" id="tengan-export" title="Export frames JSON">Export</button>
+            <button class="tg-btn accent" id="tengan-diag" title="Copy HUD status &amp; event log to clipboard">⧉ Diag</button>
           </div>
           <div id="tengan-log"></div>
         </div>
@@ -260,6 +310,7 @@
       pause: root.querySelector("#tengan-pause"),
       clear: root.querySelector("#tengan-clear"),
       export: root.querySelector("#tengan-export"),
+      diag: root.querySelector("#tengan-diag"),
       min: root.querySelector("#tengan-min"),
       close: root.querySelector("#tengan-close"),
       reset: root.querySelector("#tengan-reset"),
@@ -294,6 +345,7 @@
       els.count.textContent = "0";
     });
     els.export.addEventListener("click", exportJson);
+    els.diag.addEventListener("click", copyDiag);
     els.advise.addEventListener("click", runAdvice);
     els.min.addEventListener("click", function () { root.classList.toggle("min"); });
     els.close.addEventListener("click", closeOverlay);
@@ -442,6 +494,177 @@
     renderAdvice();
   }
 
+  // ---- Native TexasSolver solve-server (full-depth GTO; opt-in) ----
+  const SOLVER_URL = "http://127.0.0.1:7333";
+  // Depth presets bound the native solve's latency: iterations + accuracy +
+  // a range combo cap (larger = sharper but slower).
+  const DEPTH = {
+    fast:   { maxIter: 40,  accuracy: 1.0,  cap: 250 },
+    normal: { maxIter: 80,  accuracy: 0.5,  cap: 400 },
+    deep:   { maxIter: 200, accuracy: 0.25, cap: 700 }
+  };
+  function depthCfg() { return DEPTH[state.solveDepth] || DEPTH.normal; }
+
+  // Bet-tree richness per depth preset (sizes are % of pot). More sizes = sharper
+  // sizing strategy but a wider tree (slower). Fast mirrors the original single
+  // size/street; Deep adds extra sizes, a turn raise, and an OOP flop donk lead.
+  const BET_TREE = {
+    fast:   { flop: { bet: [50], raise: [60], allin: true }, turn: { bet: [66], allin: true }, river: { bet: [75], allin: true } },
+    normal: { flop: { bet: [33, 75], raise: [60], allin: true }, turn: { bet: [66], allin: true }, river: { bet: [50, 100], allin: true } },
+    deep:   { flop: { bet: [33, 75, 125], raise: [60], donk: [33], allin: true }, turn: { bet: [50, 100], raise: [60], allin: true }, river: { bet: [33, 75, 125], allin: true } }
+  };
+  function betTree() { return BET_TREE[state.solveDepth] || BET_TREE.normal; }
+
+  // Navigate the solved tree to the node where the hero is about to act, given
+  // the betting so far. Root = OOP's first action on the solved street.
+  function betChild(node, targetBB) {
+    if (!node || !node.childrens) return null;
+    let best = null, bestd = 1e9;
+    for (const k in node.childrens) {
+      const m = /^(BET|RAISE)\s+([\d.]+)/.exec(k);
+      if (!m) continue;
+      const d = Math.abs(parseFloat(m[2]) - targetBB);
+      if (d < bestd) { bestd = d; best = node.childrens[k]; }
+    }
+    return best;
+  }
+  // This street's betting actions in play order (for deep tree navigation), each
+  // as { kind, amtBB } where amtBB is the player's TOTAL committed this street in
+  // big blinds — matching TexasSolver's total-amount child labels ("BET 2",
+  // "RAISE 8"). Folds are skipped (a HU fold ends the hand, no decision node).
+  function streetActionSeq(req) {
+    if (!state.hand || !state.hand.actions) return [];
+    const bb = req.bb || 1;
+    const out = [];
+    for (const a of state.hand.actions) {
+      if (a.street !== req.street) continue;
+      if (a.action === "fold") continue;
+      out.push({ kind: a.action, amtBB: (a.toAmount || 0) / bb });
+    }
+    return out;
+  }
+
+  // Pick the child of `node` matching one logged action. check/call match by
+  // label; bet/raise match the closest size of the right type (falling back to
+  // the opposite type if the tree labels the same chips-in differently).
+  function childForAction(node, a) {
+    const ch = node && node.childrens; if (!ch) return null;
+    if (a.kind === "check") return ch["CHECK"] || null;
+    if (a.kind === "call") return ch["CALL"] || null;
+    const pick = (pref) => {
+      let best = null, bestd = 1e9;
+      for (const k in ch) {
+        const m = new RegExp("^" + pref + "\\s+([\\d.]+)").exec(k);
+        if (!m) continue;
+        const d = Math.abs(parseFloat(m[1]) - a.amtBB);
+        if (d < bestd) { bestd = d; best = ch[k]; }
+      }
+      return best;
+    };
+    const pref = a.kind === "raise" ? "RAISE" : "BET";
+    return pick(pref) || pick(pref === "RAISE" ? "BET" : "RAISE");
+  }
+
+  // Replay this street's actions from the root to the node where hero acts now.
+  function navByReplay(tree, req) {
+    let node = tree;
+    for (let i = 0; i < req.streetActions.length; i++) {
+      node = childForAction(node, req.streetActions[i]);
+      if (!node) return null;
+    }
+    return node;
+  }
+
+  // One-level heuristic nav (the proven fallback): hero first to act, checked-to,
+  // or facing the first bet.
+  function navByHeuristic(tree, req) {
+    if (!(req.toCall > 0)) {
+      return req.heroIsOOP ? tree : (tree.childrens && tree.childrens["CHECK"]);
+    }
+    const target = req.toCall / (req.bb || 1);
+    return req.heroIsOOP ? betChild(tree.childrens && tree.childrens["CHECK"], target) : betChild(tree, target);
+  }
+
+  function nodeForHero(tree, req) {
+    // Prefer replaying the real action sequence (handles raises / re-raises);
+    // fall back to the one-level heuristic if it doesn't cleanly resolve.
+    if (Array.isArray(req.streetActions)) {
+      const n = navByReplay(tree, req);
+      if (n && n.strategy && n.strategy.actions) return n;
+    }
+    return navByHeuristic(tree, req);
+  }
+
+  // Read the hero's strategy out of a returned TexasSolver tree (any street).
+  function extractNative(tree, req) {
+    const node = nodeForHero(tree, req);
+    const strat = node && node.strategy;
+    if (!strat || !strat.actions || !strat.strategy) return null;
+    const acts = strat.actions;
+    const key = req.heroCardStr[0] + req.heroCardStr[1];
+    const fr = strat.strategy[key] || strat.strategy[req.heroCardStr[1] + req.heroCardStr[0]];
+    if (!fr) return null;
+    const bb = req.bb || 1;
+    const out = [];
+    for (let i = 0; i < acts.length; i++) {
+      const a = acts[i], f = fr[i] || 0;
+      if (f <= 0.004) continue;
+      let kind = "check", allin = false, potFrac, amount;
+      if (/^FOLD/.test(a)) kind = "fold";
+      else if (/^CALL/.test(a)) kind = "call";
+      else if (/^(BET|RAISE)/.test(a)) {
+        kind = /^BET/.test(a) ? "bet" : "raise";
+        const amtBB = parseFloat(a.split(" ")[1]);
+        allin = amtBB >= (req.effStack || 1e9) * 0.98;
+        amount = Math.round(amtBB * bb);
+        if (!allin) potFrac = +(amtBB / (req.pot || 1)).toFixed(2);
+      }
+      out.push({ kind: kind, freq: f, allin: allin, potFrac: potFrac, amount: amount });
+    }
+    out.sort(function (x, y) { return y.freq - x.freq; });
+    return out.length ? out : null;
+  }
+
+  // Render the in-engine heuristic instantly, then upgrade to the native solve
+  // when it returns; on any failure keep the heuristic. Flop, heads-up, checked-to.
+  function dispatchNative(req, gs, positions, opts, id) {
+    let base;
+    try { base = window.TenganEngine.recommend(gs, positions, opts); } catch (e) { return false; }
+    state.advice = base; renderAdvice();   // instant heuristic baseline
+    const d = depthCfg();
+    const body = JSON.stringify({
+      board: req.board, pot: req.pot, effStack: req.effStack,
+      oopRange: req.oopRange, ipRange: req.ipRange,
+      accuracy: d.accuracy, maxIter: d.maxIter, threads: state.solveThreads || 4,
+      tree: betTree()
+    });
+    logDiag("native solve → " + SOLVER_URL + " · " + req.street + " · " + state.solveDepth);
+    fetch(SOLVER_URL + "/solve", { method: "POST", headers: { "Content-Type": "application/json" }, body: body })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (id !== state.latestSolveId || !els) return;
+        if (j.error) { state.lastNative = "error: " + j.error; logDiag("native solve error: " + j.error); return; } // keep heuristic
+        const actions = extractNative(j.strategy, req);
+        if (!actions || !actions.length) { state.lastNative = "no hero node (kept heuristic)"; logDiag("native solve: hero node not found, kept heuristic"); return; }
+        // Build the solved-range grid (true GTO) from the hero's decision node.
+        let grid = null;
+        try {
+          const node = nodeForHero(j.strategy, req);
+          if (node && node.strategy && window.TenganEngine.nativeGrid) grid = window.TenganEngine.nativeGrid(node.strategy, req.effStack);
+        } catch (e) {}
+        base.recommendation = {
+          headline: "", source: "solver", bb: base.recommendation.bb,
+          detail: req.street.charAt(0).toUpperCase() + req.street.slice(1) + " GTO solve — native TexasSolver, range vs range.",
+          top: actions[0], actions: actions, rangeGrid: grid,
+          note: "True solve (native TexasSolver · " + req.street + ") · " + (j.ms ? Math.round(j.ms / 1000) + "s" : "")
+        };
+        state.lastNative = "ok · " + req.street + " · " + (j.ms ? Math.round(j.ms / 1000) + "s" : "?");
+        state.advice = base; renderAdvice();
+      })
+      .catch(function (e) { state.lastNative = "server unreachable"; logDiag("native solve: server unreachable (" + (e && e.message ? e.message : "fetch failed") + ")"); /* keep heuristic baseline */ });
+    return true;
+  }
+
   // Run the advisor. When `auto` it runs silently for the hero's current
   // decision; manual (⚡) advises the hero's active hand or the latest frame.
   // The solve runs in a Web Worker (off the main thread) so multi-second CFR
@@ -496,11 +719,37 @@
       };
       opts.heroContinued = calledEarlier(opts.heroSeat);
       if (villSeat != null) opts.villainContinued = calledEarlier(villSeat);
+
+      // How many *prior* postflop streets did a player bet/raise on (barrels)?
+      // 2+ barrels means the range polarizes — the engine drops give-up hands.
+      const barrelsBefore = function (seat) {
+        const streets = {};
+        for (const a of (state.hand.actions || [])) {
+          const o = ORD[a.street] != null ? ORD[a.street] : 9;
+          if (a.seat === seat && (a.action === "bet" || a.action === "raise") && o >= 1 && o < cur) streets[o] = true;
+        }
+        return Object.keys(streets).length;
+      };
+      opts.heroBarrels = barrelsBefore(opts.heroSeat);
+      if (villSeat != null) opts.villainBarrels = barrelsBefore(villSeat);
     }
 
     const id = ++state.solveSeq;
     state.latestSolveId = id;
     const positions = positionsMap();
+
+    // Native TexasSolver path: full-depth solve for any heads-up postflop spot
+    // (flop/turn/river, checked-to or facing a bet). Falls back inside on error.
+    if (state.nativeSolve && window.TenganEngine.solverRequest) {
+      opts.nativeCap = depthCfg().cap;
+      let req = null;
+      try { req = window.TenganEngine.solverRequest(gs, positions, opts); } catch (e) {}
+      if (req && req.ok && (req.street === "flop" || req.street === "turn" || req.street === "river")) {
+        req.streetActions = streetActionSeq(req);   // for deep within-street tree navigation
+        if (dispatchNative(req, gs, positions, opts, id)) return;
+      }
+    }
+
     let w = ensureWorker();
     if (w) {
       opts.solveTurn = true;                         // safe off-thread (turn CFR is multi-second)
@@ -518,6 +767,7 @@
       if (id !== state.latestSolveId) return;
       try { state.advice = window.TenganEngine.recommend(gs, positions, opts); renderAdvice(); }
       catch (e) {
+        logDiag("engine error: " + String((e && e.message) || e));
         if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Engine error: ' +
           escapeHtml(String((e && e.message) || e)) + "</div>";
       }
@@ -533,6 +783,19 @@
     }
     const r = out.recommendation;
     const bb = r.bb || state.bbv || 2;
+
+    // Diagnostics: log each distinct advice result (source + street + strategy).
+    if (r.actions && r.actions.length) {
+      const spot = out.spot || {};
+      const summ = r.actions.filter((a) => (a.freq || 0) > 0.004)
+        .map((a) => (a.allin ? "all-in" : a.kind) + " " + Math.round((a.freq || 0) * 100) + "%").join(" / ");
+      const dkey = (r.source || "") + "|" + (spot.street || "") + "|" + summ;
+      if (dkey !== state._lastDiagAdvice) {
+        state._lastDiagAdvice = dkey;
+        logDiag("advice [" + (r.source || "?") + (spot.street ? " " + spot.street : "") + "] " + (summ || "—") +
+          (r.exploitabilityPct != null ? " · expl " + r.exploitabilityPct + "%" : ""));
+      }
+    }
 
     // Headline: build from the structured top action (formatted by unit), else
     // fall back to the text headline (math / messages).
@@ -584,7 +847,9 @@
     // (Pot-odds/MDF/SPR math and verbose notes are intentionally hidden.)
     const toggle = '<span class="tg-unit" id="tg-unit-toggle" title="Toggle $ / big blinds">' +
       '<span class="' + (state.unit === "usd" ? "on" : "") + '">$</span>' +
-      '<span class="' + (state.unit === "bb" ? "on" : "") + '">bb</span></span>';
+      '<span class="' + (state.unit === "bb" ? "on" : "") + '">bb</span></span>' +
+      '<span class="tg-native ' + (state.nativeSolve ? "on" : "") + '" id="tg-native-toggle" ' +
+      'title="Native TexasSolver flop solve (requires the local solve-server)">solver</span>';
 
     // Tournament advisory strip: push/fold mode, PKO bounty, pay-jump proximity.
     let mttHtml = "";
@@ -610,8 +875,19 @@
       srcHtml = '<div class="tg-srcnote ' + cls + '">' + escapeHtml(r.note) + "</div>";
     }
 
+    // Native-solver depth selector (only shown when the native solver is on).
+    let depthHtml = "";
+    if (state.nativeSolve) {
+      const dopts = [["fast", "Fast"], ["normal", "Normal"], ["deep", "Deep"]];
+      depthHtml = '<div class="tg-depth" title="Native solve depth — iterations / accuracy / range size">' +
+        dopts.map(function (p) {
+          return '<button class="tg-dbtn ' + (state.solveDepth === p[0] ? "on" : "") + '" data-depth="' + p[0] + '">' + p[1] + "</button>";
+        }).join("") + "</div>";
+    }
+
     els.advice.innerHTML =
       '<div class="tengan-adv-head">' + escapeHtml(headline) + toggle + "</div>" +
+      depthHtml +
       (r.detail ? '<div class="tengan-adv-detail">' + escapeHtml(r.detail) + "</div>" : "") +
       mttHtml +
       actionsHtml +
@@ -621,6 +897,17 @@
     if (tg) tg.addEventListener("click", function () {
       state.unit = state.unit === "usd" ? "bb" : "usd";
       renderAdvice();
+    });
+    const nt = els.advice.querySelector("#tg-native-toggle");
+    if (nt) nt.addEventListener("click", function () {
+      state.nativeSolve = !state.nativeSolve;
+      runAdvice(false);
+    });
+    els.advice.querySelectorAll(".tg-dbtn").forEach(function (b) {
+      b.addEventListener("click", function () {
+        const d = b.getAttribute("data-depth");
+        if (d && d !== state.solveDepth) { state.solveDepth = d; runAdvice(false); }
+      });
     });
 
     renderGrid();
@@ -639,7 +926,7 @@
   // Colour class for a grid segment / legend dot.
   function gridCls(action) {
     if (action === "allin") return "allin";
-    if (action === "raise") return "raise";
+    if (action === "raise" || action === "bet") return "raise";
     if (action === "call") return "call";
     if (action === "check") return "check";
     return "fold";
@@ -649,21 +936,61 @@
   function renderGrid() {
     if (!els || !els.grid) return;
     const out = state.advice;
-    if (!out || !out.spot || !window.TenganEngine || !window.TenganEngine.preflopGrid) {
+    if (!out || !out.spot) {
       els.grid.innerHTML = '<div class="tengan-empty">Range appears once a hand is read.</div>';
       return;
     }
     const sp = out.spot;
-    const posLabel = sp.heroPosition || "BTN";
-    const facing = (sp.street === "preflop" && sp.toCall > sp.bb) ? "raise" : "open";
-    const stackBB = sp.bb > 0 ? sp.effStack / sp.bb : 100;
-    let g;
-    try { g = window.TenganEngine.preflopGrid(posLabel, facing, stackBB, !!sp.isTournament); }
-    catch (e) { els.grid.innerHTML = ""; return; }
-
-    // Hero's current hand → highlight that cell in the grid.
+    const rec = out.recommendation;
     let heroCode = null;
     if (sp.heroCards && sp.heroCards.length === 2) heroCode = handCodeJS(sp.heroCards[0], sp.heroCards[1]);
+
+    // ---- True GTO solved-range grid (heads-up postflop) ----
+    const pg = rec && rec.rangeGrid;
+    if (pg && pg.cells && pg.cells.length === 169) {
+      const order = ["allin", "raise", "bet", "call", "check", "fold"];
+      let cellsHtml = "";
+      pg.cells.forEach(function (cell) {
+        const isHero = heroCode && cell.code === heroCode;
+        if (!cell.inRange) {
+          cellsHtml += '<div class="tg-gcell out' + (isHero ? " hero" : "") + '" title="' + cell.code + ' — not in range">' +
+            '<span class="tg-gcellbg"></span><span class="tg-gcode">' + cell.code + "</span></div>";
+          return;
+        }
+        let segs = "";
+        order.forEach(function (act) {
+          const o = cell.options.find(function (x) { return x.action === act; });
+          if (o && o.freq > 0.004) segs += '<span class="tg-gc-' + gridCls(act) + '" style="flex-grow:' + o.freq + '"></span>';
+        });
+        cellsHtml += '<div class="tg-gcell' + (isHero ? " hero" : "") + '" title="' + cell.code + (isHero ? " (your hand)" : "") + '">' +
+          '<span class="tg-gcellbg">' + segs + '</span><span class="tg-gcode">' + cell.code + "</span></div>";
+      });
+      const L = pg.legend || {};
+      function legp(act, label, pct) { return pct > 0.04 ? '<span class="tg-lg"><i class="tg-lgdot tg-gc-' + gridCls(act) + '"></i>' + label + " <b>" + pct.toFixed(0) + "%</b></span>" : ""; }
+      const legend = '<div class="tg-rangelegend">' +
+        legp("bet", "Bet", (L.bet || 0) + (L.allin || 0)) + legp("raise", "Raise", L.raise || 0) +
+        legp("call", "Call", L.call || 0) + legp("check", "Check", L.check || 0) + legp("fold", "Fold", L.fold || 0) + "</div>";
+      const native = rec.note && rec.note.indexOf("native") >= 0;
+      const hdr = '<div class="tg-rangehdr">' + escapeHtml(sp.street) + " · GTO solved range · " + (native ? "native TexasSolver" : "CFR") + " (heads-up)</div>";
+      els.grid.innerHTML = hdr + '<div class="tg-grid">' + cellsHtml + "</div>" + legend;
+      return;
+    }
+
+    // ---- Preflop chart grid (or postflop entry-range fallback) ----
+    if (!window.TenganEngine || !window.TenganEngine.preflopGrid) {
+      els.grid.innerHTML = '<div class="tengan-empty">Range appears once a hand is read.</div>';
+      return;
+    }
+    const posLabel = sp.heroPosition || "BTN";
+    const limpers = sp.limpers || 0;
+    const facing = (sp.street === "preflop")
+      ? (sp.preflopRaised ? "raise" : (limpers >= 1 ? "limp" : "open"))
+      : (sp.toCall > sp.bb ? "raise" : "open");
+    // Preflop sizing/jam is hero-stack relative (a short limper shouldn't shrink it).
+    const stackBB = sp.bb > 0 ? ((sp.street === "preflop" && sp.heroStack ? sp.heroStack : sp.effStack) / sp.bb) : 100;
+    let g;
+    try { g = window.TenganEngine.preflopGrid(posLabel, facing, stackBB, !!sp.isTournament, Math.max(1, limpers)); }
+    catch (e) { els.grid.innerHTML = ""; return; }
 
     const order = ["allin", "raise", "call", "check", "fold"];
     let cellsHtml = "";
@@ -694,11 +1021,17 @@
       leg("fold", "Fold", L.fold) + "</div>";
 
     const jam = !!sp.isTournament && stackBB <= 25;
-    const modeLabel = jam
-      ? (facing === "raise" ? "call jam" : "open-jam")
-      : (facing === "raise" ? "vs raise" : "RFI");
+    const modeLabel = facing === "limp"
+      ? "iso vs " + Math.max(1, limpers) + " limper" + (limpers === 1 ? "" : "s")
+      : jam
+        ? (facing === "raise" ? "call jam" : "open-jam")
+        : (facing === "raise" ? "vs raise" : "RFI");
+    // Postflop with no solved grid (multiway, or solver off) → this is the preflop
+    // ENTRY range, not a postflop solve. Label it honestly.
+    const postflop = sp.street !== "preflop" && sp.street !== "pre-deal";
     const hdr = '<div class="tg-rangehdr">' + escapeHtml(posLabel) + " · " +
-      modeLabel + " · " + Math.round(stackBB) + "bb" + (jam ? " · MTT" : "") + "</div>";
+      modeLabel + " · " + Math.round(stackBB) + "bb" + (jam ? " · MTT" : "") +
+      (postflop ? " · preflop entry range (no postflop solve here)" : "") + "</div>";
 
     els.grid.innerHTML = hdr + '<div class="tg-grid">' + cellsHtml + "</div>" + legend;
   }
@@ -1016,6 +1349,106 @@
     a.download = "tengan-frames-" + Date.now() + ".json";
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  // Build a plain-text diagnostics report the user can paste back for analysis.
+  function buildDiagReport() {
+    const L = [];
+    let ver = "0.1.0";
+    try { if (window.chrome && chrome.runtime && chrome.runtime.getManifest) ver = chrome.runtime.getManifest().version; } catch (e) {}
+    const cs = state.connSeen || {};
+    L.push("=== Tengan HUD diagnostics ===");
+    L.push("time: " + new Date().toISOString() + "  ·  hud v" + ver);
+    L.push("url:  " + (location ? location.href : "?"));
+    L.push("ua:   " + (navigator ? navigator.userAgent : "?"));
+    L.push("settings: units=" + state.unit + "  hero-select=" + state.heroSel +
+      "  native-solver=" + (state.nativeSolve ? "ON (" + state.solveDepth + ", " + state.solveThreads + "t)" : "off") +
+      "  engine=" + (window.TenganEngine ? "loaded" : "MISSING") + "  parser=" + (window.PokerParser ? "loaded" : "MISSING"));
+    L.push("");
+
+    L.push("[connection]");
+    L.push("frames: total=" + (state.frames ? state.frames.length : 0) +
+      "  front=" + (cs.front || 0) + " stake=" + (cs.stake || 0) + " intercom=" + (cs.intercom || 0) + " other=" + (cs.other || 0));
+    L.push("front (game) socket: " + (state._frontSeen ? "CONNECTED" : "NOT SEEN — hook may not be in the poker iframe (domain rotated?)"));
+    L.push("");
+
+    const gs = state.latestGs, m = (gs && gs.m) || {};
+    L.push("[hand]");
+    L.push("gi=" + (gs && gs.gi != null ? gs.gi : "—") + "  street=" + (STREET_NAMES[m.r] || (m.r != null ? m.r : "—")) +
+      "  seats=" + ((gs && gs.s && gs.s.length) || "—") + "/" + state.maxSeats +
+      "  bb=" + state.bbv + " (" + fmtMoney(state.bbv) + ")  toActSeat=" + (m.ai != null ? m.ai : "—") + "  heroSeatMarker(ci)=" + (m.ci != null ? m.ci : "—"));
+    L.push("hero: " + (state.heroInfo ? ("seat " + state.heroInfo.seat + "  cards " + cardsToText(state.heroInfo.cardIds)) : "not in hand / not detected"));
+    L.push("");
+
+    const out = state.advice, spot = out && out.spot, r = out && out.recommendation;
+    L.push("[spot] (from last advice)");
+    if (spot) {
+      L.push("street=" + (spot.street || "—") + "  board=" + cardsToText(spot.board) +
+        "  pot=" + fmtBb(spot.pot, spot.bb) + "  eff=" + fmtBb(spot.effStack, spot.bb) + "  toCall=" + fmtBb(spot.toCall, spot.bb));
+      L.push("heroIsOOP=" + spot.heroIsOOP + "  heroPos=" + (spot.heroPosition || "—") + "  villainPos=" + (spot.villainPos || "—") +
+        "  potType=" + (spot.potType || "—") + "  role=" + (spot.heroRole || "—") + "  activePlayers=" + (spot.activePlayers != null ? spot.activePlayers : "—"));
+      L.push("continued hero/vill=" + !!spot.heroContinued + "/" + !!spot.villainContinued +
+        "  barrels hero/vill=" + (spot.heroBarrels || 0) + "/" + (spot.villainBarrels || 0) +
+        "  tournament=" + !!spot.isTournament + (spot.ante ? " ante=" + spot.ante : "") +
+        (spot.ok === false ? "  spot.ok=FALSE reason=" + (spot.reason || "?") : ""));
+    } else {
+      L.push("(no advice computed yet — click ⚡ or wait until it's hero's turn)");
+    }
+    L.push("");
+
+    L.push("[advice]");
+    if (r) {
+      const acts = (r.actions || []).filter((a) => (a.freq || 0) > 0.004)
+        .map((a) => (a.allin ? "all-in" : a.kind) + (a.amount ? " " + a.amount : "") + " " + Math.round((a.freq || 0) * 100) + "%").join(" / ");
+      L.push("source=" + (r.source || "?") + "  top=" + (r.top ? ((r.top.allin ? "all-in" : r.top.kind) + " " + Math.round((r.top.freq || 0) * 100) + "%") : "—"));
+      L.push("actions: " + (acts || "—"));
+      if (r.note) L.push("note: " + r.note);
+      if (r.exploitabilityPct != null) L.push("exploitability: " + r.exploitabilityPct + "%");
+    } else {
+      L.push("(none)");
+    }
+    L.push("native-solver last: " + (state.lastNative || (state.nativeSolve ? "(no native solve yet)" : "off")));
+    L.push("");
+
+    L.push("[events] (" + state.diag.length + ", oldest first)");
+    for (const e of state.diag) L.push(clockTs(e.t) + "  " + e.msg);
+    return L.join("\n");
+  }
+
+  // Format a chip amount as big blinds (spot pot/stack are in chips).
+  function fmtBb(chips, bb) {
+    if (chips == null) return "—";
+    const b = bb || state.bbv || 1;
+    return (b > 0 ? +(chips / b).toFixed(1) : chips) + "bb";
+  }
+
+  function downloadText(text, name) {
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  // Copy the diagnostics report to the clipboard (download as a last resort).
+  function copyDiag() {
+    const text = buildDiagReport();
+    const flash = (msg) => { if (els && els.diag) { const o = els.diag.dataset.label || els.diag.textContent; els.diag.dataset.label = o; els.diag.textContent = msg; setTimeout(() => { els.diag.textContent = o; }, 1400); } };
+    const fallback = () => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.top = "-1000px"; ta.style.opacity = "0";
+        document.documentElement.appendChild(ta); ta.focus(); ta.select();
+        const ok = document.execCommand && document.execCommand("copy");
+        ta.remove();
+        if (ok) flash("Copied!"); else { downloadText(text, "tengan-diag-" + Date.now() + ".txt"); flash("Saved .txt"); }
+      } catch (e) { downloadText(text, "tengan-diag-" + Date.now() + ".txt"); flash("Saved .txt"); }
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => flash("Copied!"), fallback);
+      } else { fallback(); }
+    } catch (e) { fallback(); }
   }
 
   // Chip units are cents (1 unit = $0.01). Display as dollars.

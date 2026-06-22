@@ -31,5 +31,6 @@
       "resources": ["src/engine.worker.js"],
       "matches": ["*://*.stake.com/*", "*://*.skp223817.org/*"]
     }
-  ]
+  ],
+  "host_permissions": ["http://127.0.0.1:7333/*"]
 }

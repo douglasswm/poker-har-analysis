@@ -10,3 +10,12 @@ dist/
 build/
 *.log
 .DS_Store
+
+# Generated test/parity runner bundles (esbuild output)
+engine/test/.run.bundle.cjs
+engine/test/.parity.bundle.cjs
+
+# Local agent / editor config and Python caches
+.claude/
+__pycache__/
+*.pyc

@@ -5,11 +5,20 @@ real **bupticybee/TexasSolver** binary running locally on your Mac, behind a tin
 HTTP solve-server the HUD calls. River and turn already solve in-engine; this adds
 the flop (and can also serve turn/river at full depth if you prefer).
 
-> Status: solve-server **built and tested end-to-end** against the real
-> TexasSolver binary (a flop solve returns a full per-combo strategy). The HUD
-> client call is the documented last step (§4) — it needs your running server.
+> Status: **wired end-to-end.** The solve-server is built and tested against the
+> real TexasSolver binary, and the HUD client is implemented (the "solver" toggle
+> in the advice panel). Enable the toggle and run the server below; flop spots
+> then show a true native solve, falling back to the in-engine heuristic if the
+> server is unreachable. (Only the browser→localhost transport on your Mac is
+> outside what we could test in the build sandbox.)
 
 ---
+
+> **No native binary?** `wasm/` builds TexasSolver to WebAssembly — a drop-in
+> backend (`TENGAN_SOLVER_BIN=…/console_solver.js`) that needs no compiled C++
+> binary. The single-threaded wasm source is proven byte-identical to the native
+> binary; see `wasm/README.md`. (You still run this local server; a fully
+> in-browser build is future work.)
 
 ## 1. Install TexasSolver
 
@@ -46,53 +55,120 @@ Health check: `curl http://127.0.0.1:7333/` → `{"ok":true,...}`.
   "effStack": 100,
   "oopRange": "TT,99,88,77,66,...,AQo,AJo,KJo,QJo",
   "ipRange":  "AA,KK,QQ,JJ,TT,AKs,...,AKo,AQo,KQo",
-  "flopBet": 50, "turnBet": 60, "riverBet": 75,
+  "tree": {
+    "flop":  { "bet": [33, 75], "raise": [60], "allin": true },
+    "turn":  { "bet": [66], "allin": true },
+    "river": { "bet": [50, 100], "allin": true }
+  },
   "accuracy": 0.5, "maxIter": 100, "threads": 4
 }
 ```
+
+`tree` defines the bet tree: per street, `bet`/`raise`/`donk` are lists of sizes
+(**% of pot**) and `allin` adds a shove. `donk` (an OOP lead into the prior
+aggressor) is OOP-only. Omit `tree` and the server falls back to a single
+size/street (`flopBet`/`turnBet`/`riverBet`, defaults 50/60/75). The raise cap is
+TexasSolver's default (4). The HUD picks the tree from the depth preset (below).
 
 Response: `{ "ms": <solveTime>, "strategy": <TexasSolver dump> }`. The strategy is
 the solved tree; the root is OOP's first action (`actions` + per-combo `strategy`).
 Navigate `childrens["CHECK"]` / `childrens["BET …"]` to reach the node where the
 hero acts, then read the hero's combo.
 
-Tested in-repo against the real binary: `POST /solve` on `Qs,Jh,2h` returned
-`CHECK / BET 50% / ALLIN` with a full per-combo strategy.
+Tested in-repo against the real binary: a `normal`-tree solve on `Qs,Jh,2h`
+returned a root of `CHECK / BET 33% / BET 75% / ALLIN`, with hands mixing across
+the two sizes (e.g. AKo: check 26% / bet 33% 45% / bet 75% 29%) — confirming the
+multi-size tree produces real mixed sizing.
 
-## 4. HUD client (the last step)
+## 4. HUD client (wired)
 
-The extension is content-script (isolated world), so it can `fetch` localhost
-(add `http://127.0.0.1:7333/*` to host permissions). Wire it in `bridge.js` for
-flop spots, gated behind a setting and **heads-up only**, falling back to the
-in-engine heuristic when the server is unreachable:
+Implemented in `bridge.js` + the engine:
 
-```js
-// inside runAdvice, when spot.street === "flop" && headsUp && state.flopSolver:
-const body = {
-  board: boardStr,                 // "Qs,Jh,2h" from the spot board ids
-  pot: spot.pot / 100, effStack: spot.effStack / 100,
-  oopRange: heroIsOOP ? heroRangeStr : villRangeStr,
-  ipRange:  heroIsOOP ? villRangeStr : heroRangeStr,
-  accuracy: 0.5, maxIter: 80
-};
-fetch("http://127.0.0.1:7333/solve", { method: "POST",
-  headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-  .then(r => r.json()).then(j => {
-     // navigate j.strategy to the hero's decision node by the action so far,
-     // read hero's combo freqs, render like the river solver.
-  });
-```
+- `manifest.json` grants `host_permissions: ["http://127.0.0.1:7333/*"]`.
+- The advice panel has a **"solver" toggle**. Turn it on to route flop spots to
+  the native solve-server.
+- Flow: on a **heads-up, flop, checked-to-hero** spot, the HUD shows the
+  in-engine heuristic instantly, then `POST /solve` and **upgrades** the panel to
+  the native solve when it returns (badge: "True solve (native TexasSolver ·
+  flop) · Ns"). If the server is unreachable it silently keeps the heuristic.
+- `TenganEngine.solverRequest(gs, positions, opts)` builds the board + both
+  ranges from the same position/pot-type/continue-filter range-builder the
+  in-engine solver uses, so native and in-engine agree on ranges.
+- `extractNative()` reads the hero's combo strategy out of the returned tree
+  (root for OOP first-to-act; `childrens.CHECK` for IP checked-to).
 
-The range strings come from the same position/pot-type range-builder the
-in-engine solver uses (aggressor = seat RFI, 3-bet pots tighter, caller wide,
-plus the continue-filter). Reuse that logic so the local solver and the in-engine
-solver agree on ranges.
+Verified end-to-end against the real binary: `solverRequest` → `POST /solve` →
+`extractNative` returns e.g. `bet 50% 71% / check 17% / all-in 13%`. Only the
+browser→localhost transport runs on your machine (not the build sandbox).
+
+Scope: **all heads-up postflop spots** — flop, turn, and river, whether you're
+first to act, checked to, or facing a bet. The client navigates the solved tree
+to your decision node by **replaying this street's actual betting sequence** from
+the parsed action log (`streetActions`): from the root it follows each logged
+check/call/bet/raise to the matching child, so it reaches deep nodes too —
+bet → raise → you-face-the-raise, and further re-raises up to the tree's cap —
+not just the first decision. Bet/raise actions match by the player's total
+committed amount this street (the tree labels are totals, e.g. "RAISE 8"). If the
+replay can't cleanly resolve (sparse log), it falls back to the proven one-level
+nav (root for OOP-first, `childrens.CHECK` for IP checked-to, matching bet child
+when facing the first bet). Flop is solved from the preflop ranges; turn/river
+feed the flop/turn-narrowed combo ranges so the deep solve is accurate. Verified
+against the real binary: a set facing a 50% bet → raise 73% / call 20%; AKo
+overcards → fold 47% / raise 31% / call 20%; and replay reaches 3-deep re-raise
+nodes (bet → raise → CALL / RAISE / FOLD) that the one-level nav could not.
+
+## 4b. Latency controls
+
+When the "solver" toggle is on, a **Fast / Normal / Deep** selector appears. Each
+preset trades speed for sharpness (iterations + accuracy + range combo cap + the
+**bet tree** sent to the server):
+
+| Preset | maxIter | accuracy | range cap | bet tree (sizes, % pot) |
+|---|---|---|---|---|
+| Fast | 40 | 1.0 | 250 | flop 50 / turn 66 / river 75 (+ allin) |
+| Normal | 80 | 0.5 | 400 | flop 33·75 / turn 66 / river 50·100 (+ allin) |
+| Deep | 200 | 0.25 | 700 | flop 33·75·125 + donk 33 / turn 50·100 + raise / river 33·75·125 (+ allin) |
+
+Richer trees give finer sizing (the solver mixes across sizes — e.g. bet 33% vs
+75% with different hands) at the cost of a wider tree and more solve time. Thread
+count defaults to 4 (`state.solveThreads`) and is sent to the server. Turn/river
+ranges are capped to the preset's combo cap (hero's hand always kept); the flop is
+solved from preflop class-list ranges. Measured (slow sandbox): a 2-size flop
+solve ≈ 34s at maxIter 30 — far quicker on a real multi-core machine; Fast's
+single-size tree is the quickest, Deep the sharpest.
+
+## 4c. Parity QA harness
+
+`npm run parity` gates the GTO output against regressions and (optionally) cross-
+checks it against the native binary. Two modes:
+
+- **Regression gate (offline, no binary).** Solves a battery of **river and turn**
+  spots (RiverSolver + the two-street TurnSolver) and diffs the OOP root strategy
+  against committed golden references (`engine/test/parity.golden.json`).
+  Deterministic — passes at 0.00% drift; fails if any spot's **mean** per-combo
+  Δ > 2% or any **single** combo Δ > 5% (so a one-combo break trips it, on either
+  street). Runs as part of `npm test` and in CI. Run `npm run parity:gen` to
+  refresh goldens after an intended solver change. The river battery mirrors the
+  advisor's live bet tree (33/75/100% + 75% raise + allin) so the gate guards the
+  real config.
+- **Live cross-check (`--live`, needs the server).**
+  `TENGAN_SOLVER_URL=http://127.0.0.1:7333 npm run parity -- --live` solves the
+  same spots natively with a matching bet tree and reports, per spot: **Δcheck**
+  (the bet-vs-check decision agreement), the per-combo Δ, and the aggregate
+  action frequencies engine/native side by side.
+
+Measured (live, 4 spots): the **decision** agrees within **Δcheck ≤ 1%** on every
+spot, and two spots are near-identical action-by-action. The larger *per-combo* Δ
+on static boards (dry/monotone) is **bet-sizing non-uniqueness** — pot vs all-in
+are near-substitutable there, so the two solvers split that mix differently while
+betting the same total and reaching ~0.2% exploitability. It is not an error; the
+aggregate frequencies in the output make this explicit.
 
 ## 5. Notes & limits
 
-- **Latency:** a flop solve is seconds to tens of seconds depending on
-  accuracy/iterations/threads. Treat it as an on-demand "deep solve," not an
-  auto-solve on every flop.
+- **Latency:** a postflop solve is seconds to tens of seconds depending on
+  preset/threads/range width. Treat it as an on-demand "deep solve." Use Fast on
+  slow machines or wide spots; Deep when you want maximum sharpness.
 - **Heads-up only:** TexasSolver (and our range model) is HU; multiway flops stay
   on the heuristic.
 - **Range quality caps accuracy:** as everywhere, the solve is only as good as the

@@ -186,6 +186,73 @@ export function preflopAdvice(
   return { options: [{ action: "fold", freq: 1 }], rationale: `${code} folds to the raise.` };
 }
 
+// Hands strong enough to isolate limpers for value from any position — raised
+// regardless of how many limpers (big pairs + strong broadways).
+const ISO_CORE = ["AA","KK","QQ","JJ","TT","99","AKs","AKo","AQs","AQo","AJs","ATs","KQs","KQo","KJs"];
+
+// Speculative hands prefer a cheap multiway flop (overlimp) to iso-raising:
+//   - small/medium pairs 22-88 (set-mine), and
+//   - suited connectors/gappers whose high card is T or lower (e.g. T9s..54s).
+// Broadways (high card J+) and pairs 99+ are value hands and iso-raise instead.
+function isSpeculative(code: string): boolean {
+  if (code.length === 2) return RANKS.indexOf(code[0]) <= RANKS.indexOf("8"); // pair 22-88
+  if (!code.endsWith("s")) return false;                                       // offsuit -> not a "see cheap flop" hand
+  return RANKS.indexOf(code[0]) <= RANKS.indexOf("T");                         // suited, high card <= T
+}
+
+// Facing limpers (a limped pot, no raise): isolate strong hands for value with a
+// limp-aware size (3bb + 1bb per limper), tighten the iso range as limpers grow,
+// overlimp speculative/set-mine hands to see a cheap multiway flop, fold the rest.
+// The BB sees a free flop, so it iso-raises value and checks everything else.
+export function isoAdvice(
+  c1: number, c2: number, pos: Pos, limpers: number,
+  stackBB: number = 100, tournament: boolean = false
+): PreflopAdvice {
+  const code = handCode(c1, c2);
+  const n = Math.max(1, limpers);
+  const isBB = pos === "BB";
+
+  // Tournament short stack: jam-or-fold the value range over the limps.
+  if (tournament && stackBB <= MTT_PUSHFOLD_BB) {
+    return pushFold(code, pos, stackBB, "open");
+  }
+  // Jam over limpers only when genuinely short; at 13-25bb you still iso-raise
+  // small (a 25bb shove over a single limper is a leak), unlike an unopened RFI.
+  const shortStack = stackBB <= 12;
+  const sizeBB = 3 + n; // iso sizing: 3bb base + 1bb per limper
+  const spec = isSpeculative(code);
+
+  // Value range to iso-raise: the position's open range tightened by the limper
+  // count (more limpers -> need a stronger hand) plus the always-iso core, minus
+  // the speculative hands (which prefer to overlimp). "Playable" = worth a call.
+  const inRange = ISO_CORE.includes(code) || rangeAtShift(pos, -n).includes(code);
+  const playable = ISO_CORE.includes(code) || openRange(pos).includes(code);
+  const isoRaise = inRange && !spec;
+  const overlimp = spec && playable;
+
+  if (isBB) {
+    if (isoRaise) {
+      if (shortStack) return { options: [{ action: "allin", freq: 1 }], rationale: `${Math.round(stackBB)}bb — jam ${code} over ${n} limper(s).` };
+      return { options: [{ action: "raise", freq: 1, sizeBB }], rationale: `Iso-raise ${code} from BB to ${sizeBB}bb over ${n} limper(s).` };
+    }
+    return { options: [{ action: "check", freq: 1 }], rationale: `BB — check ${code} behind ${n} limper(s) (free flop).` };
+  }
+
+  if (shortStack) {
+    if (isoRaise) return { options: [{ action: "allin", freq: 1 }], rationale: `${Math.round(stackBB)}bb — jam ${code} over ${n} limper(s).` };
+    if (overlimp) return { options: [{ action: "call", freq: 1 }], rationale: `Set-mine / overlimp ${code} behind ${n} limper(s).` };
+    return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} at ${Math.round(stackBB)}bb over limpers.` };
+  }
+
+  if (isoRaise) {
+    return { options: [{ action: "raise", freq: 1, sizeBB }], rationale: `Iso-raise ${code} from ${pos} to ${sizeBB}bb over ${n} limper(s).` };
+  }
+  if (overlimp) {
+    return { options: [{ action: "call", freq: 1 }], rationale: `Overlimp ${code} behind ${n} limper(s) — cheap multiway flop / set-mine.` };
+  }
+  return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} over ${n} limper(s) — too weak to iso, too weak to call multiway.` };
+}
+
 // ---- Preflop range matrix (13x13 grid) ----
 // Ranks high→low for the grid axes (A in the top-left, 2 in the bottom-right).
 const GRID_RANKS = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
@@ -198,17 +265,19 @@ export interface GridCell {
 }
 export interface PreflopGrid {
   pos: Pos;
-  facing: "open" | "raise";
+  facing: "open" | "raise" | "limp";
   cells: GridCell[];      // 169 cells, row-major (row 0 = A-high)
   legend: { allin: number; raise: number; call: number; check: number; fold: number }; // % over 1326 combos
 }
 
 // Compute the full strategy for all 169 hands at a position/facing/stack.
+// facing "limp" = a limped pot (iso-raise over `limpers` limpers).
 export function preflopGrid(
   posLabel: string,
-  facing: "open" | "raise",
+  facing: "open" | "raise" | "limp",
   stackBB: number,
-  tournament: boolean = false
+  tournament: boolean = false,
+  limpers: number = 1
 ): PreflopGrid {
   const pos = toChartPos(posLabel || "BTN");
   const cells: GridCell[] = [];
@@ -226,7 +295,9 @@ export function preflopGrid(
       else if (suited) { c1 = hiRank * 4 + 0; c2 = loRank * 4 + 0; combos = 4; }
       else { c1 = hiRank * 4 + 0; c2 = loRank * 4 + 1; combos = 12; }
 
-      const adv = preflopAdvice(c1, c2, pos, facing, stackBB, tournament);
+      const adv = facing === "limp"
+        ? isoAdvice(c1, c2, pos, limpers, stackBB, tournament)
+        : preflopAdvice(c1, c2, pos, facing, stackBB, tournament);
       cells.push({ code: handCode(c1, c2), pair, suited, options: adv.options });
       for (const o of adv.options) tally[o.action] = (tally[o.action] || 0) + o.freq * combos;
       totalCombos += combos;
@@ -241,6 +312,66 @@ export function preflopGrid(
     fold: +(tally.fold / totalCombos * 100).toFixed(2)
   };
   return { pos, facing, cells, legend };
+}
+
+// ---- Postflop range grid (from a solved per-combo strategy) ----
+// A 13x13 view of the hero's *solved* range on the current board: each class
+// cell blends the GTO action frequencies of that class's combos that are in the
+// range (suit combos that differ on the board are averaged). Cells with no combo
+// in the solved range are marked out-of-range. Only meaningful heads-up, where a
+// true range-vs-range solve exists.
+export interface RangeGridCell {
+  code: string;
+  pair: boolean;
+  suited: boolean;
+  inRange: boolean;
+  options: { action: string; freq: number }[]; // blended, action kinds (bet/raise/call/check/fold/allin)
+}
+export interface RangeGrid {
+  cells: RangeGridCell[];                         // 169, row-major (row 0 = A-high)
+  legend: Record<string, number>;                // % of in-range combos per action kind
+}
+
+// actionKinds: normalized kind per action index (e.g. ["check","bet","bet","allin"]).
+// combos: each combo's id pair + freqs aligned to actionKinds. Same-kind actions
+// (e.g. two bet sizes) are merged per cell.
+export function rangeGrid(actionKinds: string[], combos: { a: number; b: number; freqs: number[] }[]): RangeGrid {
+  const byCode: Record<string, { sum: number[]; n: number }> = {};
+  for (const c of combos) {
+    const code = handCode(c.a, c.b);
+    const e = byCode[code] || (byCode[code] = { sum: actionKinds.map(() => 0), n: 0 });
+    for (let i = 0; i < actionKinds.length; i++) e.sum[i] += (c.freqs[i] || 0);
+    e.n++;
+  }
+  const cells: RangeGridCell[] = [];
+  const legendSum: Record<string, number> = {};
+  let inRangeCombos = 0;
+  for (let r = 0; r < 13; r++) {
+    for (let cc = 0; cc < 13; cc++) {
+      const hiRank = GRID_RANKS[Math.min(r, cc)], loRank = GRID_RANKS[Math.max(r, cc)];
+      const pair = r === cc, suited = cc > r;
+      let a: number, b: number;
+      if (pair) { a = hiRank * 4; b = hiRank * 4 + 1; }
+      else if (suited) { a = hiRank * 4; b = loRank * 4; }
+      else { a = hiRank * 4; b = loRank * 4 + 1; }
+      const code = handCode(a, b);
+      const e = byCode[code];
+      if (e && e.n > 0) {
+        const merged: Record<string, number> = {};
+        for (let i = 0; i < actionKinds.length; i++) merged[actionKinds[i]] = (merged[actionKinds[i]] || 0) + e.sum[i] / e.n;
+        const options = Object.keys(merged).map((k) => ({ action: k, freq: +merged[k].toFixed(4) }))
+          .filter((o) => o.freq > 0.004).sort((x, y) => y.freq - x.freq);
+        cells.push({ code, pair, suited, inRange: true, options });
+        for (const o of options) legendSum[o.action] = (legendSum[o.action] || 0) + o.freq * e.n;
+        inRangeCombos += e.n;
+      } else {
+        cells.push({ code, pair, suited, inRange: false, options: [] });
+      }
+    }
+  }
+  const legend: Record<string, number> = {};
+  for (const k of Object.keys(legendSum)) legend[k] = +(legendSum[k] / Math.max(1, inRangeCombos) * 100).toFixed(1);
+  return { cells, legend };
 }
 
 // Expand a set of hand codes into concrete combos, excluding board-blocked ones.

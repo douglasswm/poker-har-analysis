@@ -16,6 +16,8 @@ export interface SpotInfo {
   bb: number;                   // big blind value (chip units)
   toCall: number;               // chips hero must call (0 if no bet pending)
   effStack: number;             // smallest active stack behind (approx)
+  heroStack?: number;           // hero's own chips (drives the preflop jam-vs-raise call)
+  maxOppStack?: number;         // deepest active opponent's chips (for postflop sizing)
   heroPosition: string;         // SB/BB/BTN/UTG... from positions
   heroIsOOP: boolean;           // first to act on this street (approx)
   activePlayers: number;
@@ -27,6 +29,10 @@ export interface SpotInfo {
   potType?: "limped" | "srp" | "3bet"; // preflop pot type (drives range width)
   heroContinued?: boolean;      // hero called a bet on a prior postflop street
   villainContinued?: boolean;   // villain called a bet on a prior postflop street
+  heroBarrels?: number;         // # of prior postflop streets hero bet/raised (aggressor)
+  villainBarrels?: number;      // # of prior postflop streets villain bet/raised (aggressor)
+  limpers?: number;             // preflop: # of limpers in front of hero (no raise)
+  preflopRaised?: boolean;      // preflop: has anyone raised above the BB?
 }
 
 const STREET: Record<number, SpotInfo["street"]> = { 1: "preflop", 2: "flop", 3: "turn", 4: "river" };
@@ -37,7 +43,7 @@ const STREET: Record<number, SpotInfo["street"]> = { 1: "preflop", 2: "flop", 3:
 export function buildSpot(
   gs: any,
   positions: Record<number, string>,
-  opts?: { heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean }
+  opts?: { heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean; heroBarrels?: number; villainBarrels?: number }
 ): SpotInfo {
   const empty: SpotInfo = {
     ok: false, street: "pre-deal", heroCards: [], board: [], pot: 0, bb: 0,
@@ -75,7 +81,7 @@ export function buildSpot(
   }
 
   // Active (not folded, seated) players + effective stack + max bet on street.
-  let active = 0, minStack = Infinity, maxBet = 0, heroBet = 0;
+  let active = 0, minStack = Infinity, maxBet = 0, heroBet = 0, heroStack = 0, maxOppStack = 0;
   for (let i = 0; i < seats.length; i++) {
     const s = seats[i];
     if (!s || !s.dn) continue;
@@ -83,6 +89,8 @@ export function buildSpot(
     if (!folded) { active++; if (typeof s.c === "number") minStack = Math.min(minStack, s.c); }
     if (typeof s.b === "number" && !folded) maxBet = Math.max(maxBet, s.b);
     if (i === heroSeat && typeof s.b === "number") heroBet = s.b;
+    if (i === heroSeat && typeof s.c === "number") heroStack = s.c;
+    if (i !== heroSeat && !folded && typeof s.c === "number") maxOppStack = Math.max(maxOppStack, s.c);
   }
   if (!isFinite(minStack)) minStack = 0;
 
@@ -94,6 +102,21 @@ export function buildSpot(
     (gs.sfgs < 0 ? "pre-deal" : "preflop");
   const pot = typeof d.p === "number" ? d.p : 0;
   const toCall = Math.max(0, maxBet - heroBet);
+
+  // Preflop limper detection: with no raise (max bet == bb), a "limper" is any
+  // active non-hero seat that has matched the BB voluntarily — i.e. its bet == bb
+  // and it isn't the big blind (whose bb is a forced post). Drives iso-raising.
+  const preflopRaised = street === "preflop" && maxBet > bb;
+  let limpers = 0;
+  if (street === "preflop" && !preflopRaised) {
+    for (let i = 0; i < seats.length; i++) {
+      const s = seats[i];
+      if (!s || !s.dn || s.s === 4) continue;          // empty / folded
+      if (i === heroSeat) continue;                     // not the hero
+      if (positions[i] === "BB") continue;              // BB post is not a limp
+      if (typeof s.b === "number" && s.b === bb) limpers++;
+    }
+  }
 
   // Heuristic for "out of position": the player whose turn comes first
   // postflop is the one closest after the button. We approximate with the
@@ -116,6 +139,8 @@ export function buildSpot(
     bb,
     toCall,
     effStack: minStack,
+    heroStack,
+    maxOppStack,
     heroPosition: pos,
     heroIsOOP,
     activePlayers: active,
@@ -126,6 +151,10 @@ export function buildSpot(
     villainPos: opts?.villainPos,
     potType: opts?.potType,
     heroContinued: opts?.heroContinued,
-    villainContinued: opts?.villainContinued
+    villainContinued: opts?.villainContinued,
+    heroBarrels: opts?.heroBarrels,
+    villainBarrels: opts?.villainBarrels,
+    limpers,
+    preflopRaised
   };
 }

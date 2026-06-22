@@ -8,6 +8,7 @@
 
   // engine/src/cards.ts
   var RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
+  var SUITS = ["c", "d", "h", "s"];
   var SUIT_GLYPH = ["\u2663", "\u2666", "\u2665", "\u2660"];
   function rankOf(id) {
     return Math.floor(id / 4);
@@ -69,7 +70,7 @@
       }
       if (opts && opts.heroCards && opts.heroCards.length === 2) heroCards = opts.heroCards.slice();
     }
-    let active = 0, minStack = Infinity, maxBet = 0, heroBet = 0;
+    let active = 0, minStack = Infinity, maxBet = 0, heroBet = 0, heroStack = 0, maxOppStack = 0;
     for (let i = 0; i < seats.length; i++) {
       const s = seats[i];
       if (!s || !s.dn) continue;
@@ -80,12 +81,25 @@
       }
       if (typeof s.b === "number" && !folded) maxBet = Math.max(maxBet, s.b);
       if (i === heroSeat && typeof s.b === "number") heroBet = s.b;
+      if (i === heroSeat && typeof s.c === "number") heroStack = s.c;
+      if (i !== heroSeat && !folded && typeof s.c === "number") maxOppStack = Math.max(maxOppStack, s.c);
     }
     if (!isFinite(minStack)) minStack = 0;
     const byBoard = { 5: "river", 4: "turn", 3: "flop" };
     const street = STREET[m.r] || byBoard[board.length] || (gs.sfgs < 0 ? "pre-deal" : "preflop");
     const pot = typeof d.p === "number" ? d.p : 0;
     const toCall = Math.max(0, maxBet - heroBet);
+    const preflopRaised = street === "preflop" && maxBet > bb;
+    let limpers = 0;
+    if (street === "preflop" && !preflopRaised) {
+      for (let i = 0; i < seats.length; i++) {
+        const s = seats[i];
+        if (!s || !s.dn || s.s === 4) continue;
+        if (i === heroSeat) continue;
+        if (positions[i] === "BB") continue;
+        if (typeof s.b === "number" && s.b === bb) limpers++;
+      }
+    }
     const pos = positions[heroSeat] || "";
     const heroIsOOP = pos !== "CO" && pos !== "BTN";
     return {
@@ -101,6 +115,8 @@
       bb,
       toCall,
       effStack: minStack,
+      heroStack,
+      maxOppStack,
       heroPosition: pos,
       heroIsOOP,
       activePlayers: active,
@@ -111,7 +127,11 @@
       villainPos: opts?.villainPos,
       potType: opts?.potType,
       heroContinued: opts?.heroContinued,
-      villainContinued: opts?.villainContinued
+      villainContinued: opts?.villainContinued,
+      heroBarrels: opts?.heroBarrels,
+      villainBarrels: opts?.villainBarrels,
+      limpers,
+      preflopRaised
     };
   }
 
@@ -606,6 +626,9 @@
     const j = Math.max(0, Math.min(OPEN_ORDER.length - 1, i + shift));
     return RFI[OPEN_ORDER[j]];
   }
+  function openRange(pos) {
+    return rangeAtShift(pos, 0);
+  }
   var SHOVE_BB = 25;
   function sortOpts(opts) {
     return opts.filter((o) => o.freq > 1e-3).sort((a, b) => b.freq - a.freq);
@@ -661,8 +684,48 @@
     }
     return { options: [{ action: "fold", freq: 1 }], rationale: `${code} folds to the raise.` };
   }
+  var ISO_CORE = ["AA", "KK", "QQ", "JJ", "TT", "99", "AKs", "AKo", "AQs", "AQo", "AJs", "ATs", "KQs", "KQo", "KJs"];
+  function isSpeculative(code) {
+    if (code.length === 2) return RANKS.indexOf(code[0]) <= RANKS.indexOf("8");
+    if (!code.endsWith("s")) return false;
+    return RANKS.indexOf(code[0]) <= RANKS.indexOf("T");
+  }
+  function isoAdvice(c1, c2, pos, limpers, stackBB = 100, tournament = false) {
+    const code = handCode(c1, c2);
+    const n = Math.max(1, limpers);
+    const isBB = pos === "BB";
+    if (tournament && stackBB <= MTT_PUSHFOLD_BB) {
+      return pushFold(code, pos, stackBB, "open");
+    }
+    const shortStack = stackBB <= 12;
+    const sizeBB = 3 + n;
+    const spec = isSpeculative(code);
+    const inRange = ISO_CORE.includes(code) || rangeAtShift(pos, -n).includes(code);
+    const playable = ISO_CORE.includes(code) || openRange(pos).includes(code);
+    const isoRaise = inRange && !spec;
+    const overlimp = spec && playable;
+    if (isBB) {
+      if (isoRaise) {
+        if (shortStack) return { options: [{ action: "allin", freq: 1 }], rationale: `${Math.round(stackBB)}bb \u2014 jam ${code} over ${n} limper(s).` };
+        return { options: [{ action: "raise", freq: 1, sizeBB }], rationale: `Iso-raise ${code} from BB to ${sizeBB}bb over ${n} limper(s).` };
+      }
+      return { options: [{ action: "check", freq: 1 }], rationale: `BB \u2014 check ${code} behind ${n} limper(s) (free flop).` };
+    }
+    if (shortStack) {
+      if (isoRaise) return { options: [{ action: "allin", freq: 1 }], rationale: `${Math.round(stackBB)}bb \u2014 jam ${code} over ${n} limper(s).` };
+      if (overlimp) return { options: [{ action: "call", freq: 1 }], rationale: `Set-mine / overlimp ${code} behind ${n} limper(s).` };
+      return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} at ${Math.round(stackBB)}bb over limpers.` };
+    }
+    if (isoRaise) {
+      return { options: [{ action: "raise", freq: 1, sizeBB }], rationale: `Iso-raise ${code} from ${pos} to ${sizeBB}bb over ${n} limper(s).` };
+    }
+    if (overlimp) {
+      return { options: [{ action: "call", freq: 1 }], rationale: `Overlimp ${code} behind ${n} limper(s) \u2014 cheap multiway flop / set-mine.` };
+    }
+    return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} over ${n} limper(s) \u2014 too weak to iso, too weak to call multiway.` };
+  }
   var GRID_RANKS = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
-  function preflopGrid(posLabel, facing, stackBB, tournament = false) {
+  function preflopGrid(posLabel, facing, stackBB, tournament = false, limpers = 1) {
     const pos = toChartPos(posLabel || "BTN");
     const cells = [];
     const tally = { allin: 0, raise: 0, call: 0, check: 0, fold: 0 };
@@ -687,7 +750,7 @@
           c2 = loRank * 4 + 1;
           combos = 12;
         }
-        const adv = preflopAdvice(c1, c2, pos, facing, stackBB, tournament);
+        const adv = facing === "limp" ? isoAdvice(c1, c2, pos, limpers, stackBB, tournament) : preflopAdvice(c1, c2, pos, facing, stackBB, tournament);
         cells.push({ code: handCode(c1, c2), pair, suited, options: adv.options });
         for (const o of adv.options) tally[o.action] = (tally[o.action] || 0) + o.freq * combos;
         totalCombos += combos;
@@ -701,6 +764,50 @@
       fold: +(tally.fold / totalCombos * 100).toFixed(2)
     };
     return { pos, facing, cells, legend };
+  }
+  function rangeGrid(actionKinds, combos) {
+    const byCode = {};
+    for (const c of combos) {
+      const code = handCode(c.a, c.b);
+      const e = byCode[code] || (byCode[code] = { sum: actionKinds.map(() => 0), n: 0 });
+      for (let i = 0; i < actionKinds.length; i++) e.sum[i] += c.freqs[i] || 0;
+      e.n++;
+    }
+    const cells = [];
+    const legendSum = {};
+    let inRangeCombos = 0;
+    for (let r = 0; r < 13; r++) {
+      for (let cc = 0; cc < 13; cc++) {
+        const hiRank = GRID_RANKS[Math.min(r, cc)], loRank = GRID_RANKS[Math.max(r, cc)];
+        const pair = r === cc, suited = cc > r;
+        let a, b;
+        if (pair) {
+          a = hiRank * 4;
+          b = hiRank * 4 + 1;
+        } else if (suited) {
+          a = hiRank * 4;
+          b = loRank * 4;
+        } else {
+          a = hiRank * 4;
+          b = loRank * 4 + 1;
+        }
+        const code = handCode(a, b);
+        const e = byCode[code];
+        if (e && e.n > 0) {
+          const merged = {};
+          for (let i = 0; i < actionKinds.length; i++) merged[actionKinds[i]] = (merged[actionKinds[i]] || 0) + e.sum[i] / e.n;
+          const options = Object.keys(merged).map((k) => ({ action: k, freq: +merged[k].toFixed(4) })).filter((o) => o.freq > 4e-3).sort((x, y) => y.freq - x.freq);
+          cells.push({ code, pair, suited, inRange: true, options });
+          for (const o of options) legendSum[o.action] = (legendSum[o.action] || 0) + o.freq * e.n;
+          inRangeCombos += e.n;
+        } else {
+          cells.push({ code, pair, suited, inRange: false, options: [] });
+        }
+      }
+    }
+    const legend = {};
+    for (const k of Object.keys(legendSum)) legend[k] = +(legendSum[k] / Math.max(1, inRangeCombos) * 100).toFixed(1);
+    return { cells, legend };
   }
   function expandRange(codes, board) {
     const out = [];
@@ -1612,9 +1719,12 @@
       };
     }
     const stackBB = spot.bb > 0 ? spot.effStack / spot.bb : 100;
+    const preStackBB = spot.bb > 0 ? (spot.heroStack || spot.effStack) / spot.bb : 100;
     if (spot.street === "preflop") {
-      const facing = spot.toCall > spot.bb ? "raise" : "open";
-      const adv = preflopAdvice(spot.heroCards[0], spot.heroCards[1], toChartPos(spot.heroPosition || "BTN"), facing, stackBB, spot.isTournament);
+      const chartPos = toChartPos(spot.heroPosition || "BTN");
+      const raised = spot.preflopRaised ?? spot.toCall > spot.bb;
+      const limpers = spot.limpers || 0;
+      const adv = !raised && limpers >= 1 ? isoAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, limpers, preStackBB, spot.isTournament) : preflopAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, raised ? "raise" : "open", preStackBB, spot.isTournament);
       const actions = adv.options.map((o) => ({
         kind: o.action === "allin" ? "raise" : o.action,
         freq: o.freq,
@@ -1659,6 +1769,44 @@
     });
     return out.length >= 8 ? out : combos;
   }
+  function pairRankOf(cards) {
+    const counts = new Array(13).fill(0);
+    for (const c of cards) counts[rankOf(c)]++;
+    let best = -1;
+    for (let r = 0; r < 13; r++) if (counts[r] >= 2) best = r;
+    return best;
+  }
+  function narrowBarrel(combos, priorBoard, barrels) {
+    if (barrels < 2 || priorBoard.length < 3) return combos;
+    const topBoard = Math.max(...priorBoard.map(rankOf));
+    const value = [], draws = [], air = [];
+    for (const c of combos) {
+      const all = [c.a, c.b, ...priorBoard];
+      const cat = handCategory(all).cat;
+      if (cat >= 2 || cat === 1 && pairRankOf(all) >= topBoard) value.push(c);
+      else if (hasStrongDraw(all)) draws.push(c);
+      else if (cat === 0) air.push(c);
+    }
+    const bluffN = Math.min(air.length, Math.max(0, Math.round(value.length * 0.8)));
+    const keptAir = [];
+    if (bluffN > 0) {
+      const step = air.length / bluffN;
+      for (let x = 0; x < air.length && keptAir.length < bluffN; x += step) keptAir.push(air[Math.floor(x)]);
+    }
+    const out = value.concat(draws, keptAir);
+    return out.length >= 8 ? out : combos;
+  }
+  function builtRanges(spot) {
+    const { hero, vill } = riverRanges(spot);
+    const prior = spot.board.slice(0, spot.board.length - 1);
+    let heroR = expandRange(hero, spot.board);
+    let villR = expandRange(vill, spot.board);
+    if (spot.heroContinued) heroR = narrowContinue(heroR, prior);
+    if (spot.villainContinued) villR = narrowContinue(villR, prior);
+    if ((spot.heroBarrels || 0) >= 2) heroR = narrowBarrel(heroR, prior, spot.heroBarrels);
+    if ((spot.villainBarrels || 0) >= 2) villR = narrowBarrel(villR, prior, spot.villainBarrels);
+    return { heroR, villR };
+  }
   function ensureCombo(combos, cards) {
     const [a, b] = cards;
     if (combos.some((c) => c.a === a && c.b === b || c.a === b && c.b === a)) return combos;
@@ -1699,18 +1847,23 @@
     if (!hero.includes(code)) hero = [...hero, code];
     return { hero, vill };
   }
+  function solveCombos(spot) {
+    let { heroR, villR } = builtRanges(spot);
+    heroR = ensureCombo(heroR, spot.heroCards);
+    return spot.heroIsOOP ? { oop: heroR, ip: villR } : { oop: villR, ip: heroR };
+  }
+  function gridFromRoot(rs) {
+    const kinds = rs.actions.map((a) => a.allin ? "allin" : a.kind);
+    const combos = rs.perCombo.map((pc) => ({ a: pc.combo.a, b: pc.combo.b, freqs: pc.freqs }));
+    return rangeGrid(kinds, combos);
+  }
   function solveRiverRVR(spot, iterations) {
     const heroIsOOP = spot.heroIsOOP;
     const heroPlayer = heroIsOOP ? 0 : 1;
-    const { hero, vill } = riverRanges(spot);
     const RIVER_CAP = 220;
-    const priorBoard = spot.board.slice(0, spot.board.length - 1);
-    let heroR = expandRange(hero, spot.board);
-    let villR = expandRange(vill, spot.board);
-    if (spot.heroContinued) heroR = narrowContinue(heroR, priorBoard);
-    if (spot.villainContinued) villR = narrowContinue(villR, priorBoard);
-    const heroRange = ensureCombo(capRange(heroR, RIVER_CAP, spot.heroCards), spot.heroCards);
-    const villRange = capRange(villR, RIVER_CAP);
+    const built = builtRanges(spot);
+    const heroRange = ensureCombo(capRange(built.heroR, RIVER_CAP, spot.heroCards), spot.heroCards);
+    const villRange = capRange(built.villR, RIVER_CAP);
     const toCall = spot.toCall;
     const potBeforeBet = toCall > 0 ? Math.max(1, spot.pot - toCall) : spot.pot;
     const rspot = {
@@ -1719,8 +1872,11 @@
       effStack: Math.max(1, spot.effStack),
       oop: heroIsOOP ? heroRange : villRange,
       ip: heroIsOOP ? villRange : heroRange,
-      betSizes: [0.5, 1],
-      raiseSizes: [1],
+      // Wider river bet tree (33/75/100% pot + a 75% raise + allin). The river solve
+      // is instant, so the extra sizes are ~free and sharpen sizing — benched at
+      // ~0.6s with exploitability ~0.01% (vs ~0.10% on the old 2-size tree).
+      betSizes: [0.33, 0.75, 1],
+      raiseSizes: [0.75],
       raiseCap: 1,
       allowAllIn: true
     };
@@ -1740,21 +1896,17 @@
       top: actions[0],
       actions,
       exploitabilityPct: +exploitabilityPct.toFixed(2),
+      rangeGrid: gridFromRoot(rs),
       note: `True CFR solve \xB7 exploitability ${exploitabilityPct.toFixed(1)}%`
     };
   }
   function solveTurnRVR(spot, iterations) {
     const heroIsOOP = spot.heroIsOOP;
     const heroPlayer = heroIsOOP ? 0 : 1;
-    const { hero, vill } = riverRanges(spot);
     const CAP = 130;
-    const priorBoard = spot.board.slice(0, spot.board.length - 1);
-    let heroR = expandRange(hero, spot.board);
-    let villR = expandRange(vill, spot.board);
-    if (spot.heroContinued) heroR = narrowContinue(heroR, priorBoard);
-    if (spot.villainContinued) villR = narrowContinue(villR, priorBoard);
-    const heroRange = ensureCombo(capRange(heroR, CAP, spot.heroCards), spot.heroCards);
-    const villRange = capRange(villR, CAP);
+    const built = builtRanges(spot);
+    const heroRange = ensureCombo(capRange(built.heroR, CAP, spot.heroCards), spot.heroCards);
+    const villRange = capRange(built.villR, CAP);
     const toCall = spot.toCall;
     const potBeforeBet = toCall > 0 ? Math.max(1, spot.pot - toCall) : spot.pot;
     const tspot = {
@@ -1763,6 +1915,9 @@
       effStack: Math.max(1, spot.effStack),
       oop: heroIsOOP ? heroRange : villRange,
       ip: heroIsOOP ? villRange : heroRange,
+      // Turn stays single-size: it's the latency-bound street in pure JS (the
+      // turn×rivers×river tree), and benching showed a second turn/river size ~doubles
+      // the solve (~8s -> ~13s). For richer turn sizing use the native/WASM path.
       turnBetSizes: [0.66],
       riverBetSizes: [0.75],
       raiseCap: 1,
@@ -1784,6 +1939,7 @@
       top: actions[0],
       actions,
       exploitabilityPct: +exploitabilityPct.toFixed(2),
+      rangeGrid: gridFromRoot(rs),
       note: `True CFR solve (turn+river) \xB7 exploit ${exploitabilityPct.toFixed(1)}%`
     };
   }
@@ -1826,6 +1982,62 @@
     }
     return n ? (win + tie * 0.5) / n : 0.5;
   }
+  function heroEquityField(hero, board, villRange, nOpp, samples) {
+    const need = 5 - board.length;
+    if (need < 0 || !villRange.length || nOpp < 1) return 0.5;
+    const used0 = /* @__PURE__ */ new Set([...hero, ...board]);
+    const deck = [];
+    for (let c = 0; c < 52; c++) if (!used0.has(c)) deck.push(c);
+    let score = 0, n = 0;
+    for (let s = 0; s < samples; s++) {
+      const used = new Set(used0);
+      const opps = [];
+      let ok = true;
+      for (let o = 0; o < nOpp; o++) {
+        let vc = null;
+        for (let tries = 0; tries < 16; tries++) {
+          const cand = villRange[Math.random() * villRange.length | 0];
+          if (!used.has(cand.a) && !used.has(cand.b)) {
+            vc = cand;
+            break;
+          }
+        }
+        if (!vc) {
+          ok = false;
+          break;
+        }
+        used.add(vc.a);
+        used.add(vc.b);
+        opps.push(vc);
+      }
+      if (!ok) continue;
+      const run = [];
+      let guard = 0;
+      while (run.length < need && guard < 400) {
+        const c = deck[Math.random() * deck.length | 0];
+        if (used.has(c) || run.indexOf(c) >= 0) {
+          guard++;
+          continue;
+        }
+        run.push(c);
+        used.add(c);
+      }
+      if (run.length < need) continue;
+      const hs = evaluate7([hero[0], hero[1], ...board, ...run]);
+      let maxV = -1, tiesAtTop = 0;
+      for (const vc of opps) {
+        const vs = evaluate7([vc.a, vc.b, ...board, ...run]);
+        if (vs > maxV) maxV = vs;
+      }
+      if (hs > maxV) score += 1;
+      else if (hs === maxV) {
+        for (const vc of opps) if (evaluate7([vc.a, vc.b, ...board, ...run]) === hs) tiesAtTop++;
+        score += 1 / (tiesAtTop + 1);
+      }
+      n++;
+    }
+    return n ? score / n : 0.5;
+  }
   function flopTurnAdvice(spot, math) {
     const all = [...spot.heroCards, ...spot.board];
     const isRiver = spot.street === "river";
@@ -1835,10 +2047,13 @@
     const pot = spot.pot, bb = spot.bb;
     const wet = boardWetness(spot.board);
     const dryness = 1 - wet;
-    const spr2 = pot > 0 ? spot.effStack / pot : 10;
+    const heroStk = spot.heroStack && spot.heroStack > 0 ? spot.heroStack : spot.effStack;
+    const oppMax = spot.maxOppStack && spot.maxOppStack > 0 ? spot.maxOppStack : spot.effStack;
+    const commitStk = Math.min(heroStk, oppMax);
+    const spr2 = pot > 0 ? commitStk / pot : 10;
     const lowSPR = spr2 <= 4;
     const role = spot.heroRole;
-    const eff = spot.effStack;
+    const eff = heroStk;
     const cap = (a) => {
       if (eff > 0 && a.amount != null && a.amount >= eff) {
         a.amount = eff;
@@ -1861,6 +2076,62 @@
     let actions;
     let top;
     let detail;
+    const nOpp = Math.max(1, (spot.activePlayers || 2) - 1);
+    if (nOpp >= 2) {
+      const field = expandRange(GENERIC_CONTINUE, [...spot.board, ...spot.heroCards]);
+      const eq = heroEquityField(spot.heroCards, spot.board, field, nOpp, 1200);
+      const eqPct = Math.round(eq * 100);
+      const fair = 1 / (nOpp + 1);
+      const edge = eq / fair;
+      const wayN = nOpp + 1;
+      if (spot.toCall > 0) {
+        const betFrac = callFracOfPot(spot.toCall, pot - spot.toCall || pot);
+        const need = potOddsEquity(betFrac);
+        const needPct = Math.round(need * 100);
+        if (eq >= 0.55 && edge >= 1.8) {
+          top = raiseTo(0.7);
+          actions = [top];
+          detail = `~${eqPct}% vs field (${wayN}-way) \u2014 raise for value.`;
+        } else if (eq >= need + 0.02) {
+          top = plain("call");
+          actions = [top];
+          detail = `~${eqPct}% vs ${needPct}% needed (${wayN}-way) \u2014 call.`;
+        } else if (draw && eq >= need * 0.85) {
+          top = plain("call");
+          actions = [top];
+          detail = `~${eqPct}% + draw (${wayN}-way) \u2014 call on odds.`;
+        } else {
+          top = plain("fold");
+          actions = [top];
+          detail = `~${eqPct}% < ${needPct}% needed (${wayN}-way) \u2014 fold.`;
+        }
+      } else if (eq >= 0.5 && edge >= 1.8 && cat >= 1) {
+        top = bet(wet > 0.5 ? 0.66 : 0.5);
+        actions = [top];
+        detail = `~${eqPct}% vs field (${wayN}-way) \u2014 value bet.`;
+      } else if (eq >= 0.38 && edge >= 1.5 && cat >= 1) {
+        top = bet(0.5);
+        actions = [top];
+        detail = `~${eqPct}% vs field (${wayN}-way) \u2014 thin value / protection.`;
+      } else if (draw) {
+        ({ actions, top } = mix(0.6, Math.min(0.55, 0.25 + 0.3 * wet)));
+        detail = `~${eqPct}% + draw (${wayN}-way) \u2014 semi-bluff some.`;
+      } else {
+        top = plain("check");
+        actions = [top];
+        detail = `~${eqPct}% vs field (${wayN}-way) \u2014 check (pot control, bluffs fold out few of ${nOpp}).`;
+      }
+      return {
+        headline: "",
+        source: "equity",
+        detail,
+        bb,
+        top,
+        actions,
+        math,
+        note: `Multiway (${wayN}-way) \u2014 equity vs ${nOpp} opponents (approximate, not a solve)`
+      };
+    }
     if (spot.toCall > 0) {
       const eq = eqVs(GENERIC_CBET);
       const eqPct = Math.round(eq * 100);
@@ -1945,6 +2216,18 @@
   }
 
   // engine/src/index.ts
+  function capCombos(cs, max, keep) {
+    if (cs.length <= max) return cs;
+    const out = [];
+    const step = cs.length / max;
+    for (let x = 0; x < cs.length; x += step) out.push(cs[Math.floor(x)]);
+    const [a, b] = keep;
+    if (!out.some((c) => c.a === a && c.b === b || c.a === b && c.b === a)) {
+      const hc = cs.find((c) => c.a === a && c.b === b || c.a === b && c.b === a);
+      if (hc) out[0] = hc;
+    }
+    return out;
+  }
   var TenganEngine = {
     version: "0.1.0",
     buildSpot,
@@ -1955,11 +2238,80 @@
     preflopGrid,
     // 13x13 strategy matrix for a position/facing/stack
     gtomath: gtomath_exports,
+    // Build a 13x13 solved-range grid from a native TexasSolver decision node
+    // (node.strategy = { actions:[labels], strategy:{combo: [freqs]} }). effStackBB
+    // tells bet/allin apart. Returns a RangeGrid the HUD can render.
+    nativeGrid(stratNode, effStackBB) {
+      if (!stratNode || !stratNode.actions || !stratNode.strategy) return null;
+      const kinds = stratNode.actions.map((a) => {
+        if (/^CHECK/.test(a)) return "check";
+        if (/^CALL/.test(a)) return "call";
+        if (/^FOLD/.test(a)) return "fold";
+        const m = /^(BET|RAISE)\s+([\d.]+)/.exec(a);
+        if (m) {
+          const amt = parseFloat(m[2]);
+          const allin = amt >= (effStackBB || 1e9) * 0.98;
+          return allin ? "allin" : m[1] === "BET" ? "bet" : "raise";
+        }
+        return "check";
+      });
+      const cid = (s) => RANKS.indexOf(s[0]) * 4 + SUITS.indexOf(s[1]);
+      const combos = [];
+      for (const k of Object.keys(stratNode.strategy)) {
+        const ids = k.match(/../g);
+        if (!ids || ids.length !== 2) continue;
+        const a = cid(ids[0]), b = cid(ids[1]);
+        if (a < 0 || b < 0 || a > 51 || b > 51) continue;
+        combos.push({ a, b, freqs: stratNode.strategy[k] });
+      }
+      return rangeGrid(kinds, combos);
+    },
     // Convenience: from a raw GameState json + positions map -> recommendation.
     // opts may force a hero seat / supply hole cards, and set solve iterations.
     recommend(gs, positions, opts) {
-      const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued });
+      const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels });
       return { spot, recommendation: advise(spot, { iterations: opts?.iterations, turnIters: opts?.turnIters, solveTurn: opts?.solveTurn }) };
+    },
+    // Build a request for the native TexasSolver solve-server from a spot: the
+    // board + both ranges (position/pot-type aware) + the metadata the client
+    // needs to read the hero's node out of the returned tree. Pot/stack in bb.
+    solverRequest(gs, positions, opts) {
+      const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels });
+      if (!spot.ok || spot.heroCards.length !== 2 || spot.activePlayers > 2 || spot.street === "preflop" || spot.street === "pre-deal") {
+        return { ok: false, reason: spot.reason || "not a heads-up postflop spot" };
+      }
+      const tsCard = (id) => RANKS[rankOf(id)] + SUITS[suitOf(id)];
+      const bb = spot.bb > 0 ? spot.bb : 1;
+      let oopRange, ipRange;
+      if (spot.street === "flop") {
+        const { hero, vill } = riverRanges(spot);
+        oopRange = (spot.heroIsOOP ? hero : vill).join(",");
+        ipRange = (spot.heroIsOOP ? vill : hero).join(",");
+      } else {
+        let { oop, ip } = solveCombos(spot);
+        const cap = opts?.nativeCap;
+        if (cap && cap > 0) {
+          oop = capCombos(oop, cap, spot.heroCards);
+          ip = capCombos(ip, cap, spot.heroCards);
+        }
+        const ser = (cs) => cs.map((c) => tsCard(c.a) + tsCard(c.b)).join(",");
+        oopRange = ser(oop);
+        ipRange = ser(ip);
+      }
+      return {
+        ok: true,
+        board: spot.board.map(tsCard).join(","),
+        pot: +(spot.pot / bb).toFixed(2),
+        effStack: +(spot.effStack / bb).toFixed(2),
+        oopRange,
+        ipRange,
+        heroIsOOP: spot.heroIsOOP,
+        heroCards: spot.heroCards.slice(),
+        heroCardStr: spot.heroCards.map(tsCard),
+        toCall: spot.toCall,
+        bb,
+        street: spot.street
+      };
     }
   };
   globalThis.TenganEngine = TenganEngine;
