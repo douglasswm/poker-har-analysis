@@ -131,7 +131,8 @@
       heroBarrels: opts?.heroBarrels,
       villainBarrels: opts?.villainBarrels,
       limpers,
-      preflopRaised
+      preflopRaised,
+      preflopRaiseCount: opts?.preflopRaiseCount
     };
   }
 
@@ -639,7 +640,7 @@
   function preflopAdvice(c1, c2, pos, facing, stackBB = 100, tournament = false) {
     const code = handCode(c1, c2);
     if (tournament && stackBB <= MTT_PUSHFOLD_BB) {
-      return pushFold(code, pos, stackBB, facing === "raise" ? "jam" : "open");
+      return pushFold(code, pos, stackBB, facing === "open" ? "open" : "jam");
     }
     const core = rangeAtShift(pos, -1);
     const std = rangeAtShift(pos, 0);
@@ -651,6 +652,7 @@
       return 0;
     };
     const premium = ["AA", "KK", "QQ", "AKs", "AKo"].includes(code);
+    const strongReraiseContinue = ["JJ", "TT", "AQs"].includes(code);
     const shortStack = stackBB <= SHOVE_BB;
     const bbRound = Math.round(stackBB);
     if (facing === "open") {
@@ -666,6 +668,16 @@
       const opts = [{ action: "raise", freq: f, sizeBB }];
       if (f < 1) opts.push({ action: "fold", freq: 1 - f });
       return { options: sortOpts(opts), rationale: f >= 1 ? `${code} opens from ${pos}.` : `${code} \u2014 borderline open from ${pos} (mix).` };
+    }
+    if (facing === "reraise") {
+      if (shortStack) {
+        if (premium) return { options: [{ action: "allin", freq: 1 }], rationale: `${bbRound}bb \u2014 shove ${code} over the re-raise.` };
+        if (strongReraiseContinue) return { options: sortOpts([{ action: "allin", freq: 0.5 }, { action: "fold", freq: 0.5 }]), rationale: `${bbRound}bb \u2014 ${code} is a marginal re-shove over the re-raise (mix).` };
+        return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} at ${bbRound}bb vs a re-raise.` };
+      }
+      if (premium) return { options: [{ action: "raise", freq: 1 }], rationale: `${code} \u2014 continue aggressively vs the re-raise.` };
+      if (strongReraiseContinue) return { options: sortOpts([{ action: "call", freq: 0.5 }, { action: "fold", freq: 0.5 }]), rationale: `${code} \u2014 marginal continue vs re-raise (mix).` };
+      return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} vs a re-raise.` };
     }
     const latePos = pos === "BTN" || pos === "BB" || pos === "CO" || pos === "HJ";
     if (shortStack) {
@@ -1849,8 +1861,9 @@
     if (spot.street === "preflop") {
       const chartPos = toChartPos(spot.heroPosition || "BTN");
       const raised = spot.preflopRaised ?? spot.toCall > spot.bb;
+      const raiseCount = spot.preflopRaiseCount || (raised ? 1 : 0);
       const limpers = spot.limpers || 0;
-      const adv = !raised && limpers >= 1 ? isoAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, limpers, preStackBB, spot.isTournament) : preflopAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, raised ? "raise" : "open", preStackBB, spot.isTournament);
+      const adv = !raised && limpers >= 1 ? isoAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, limpers, preStackBB, spot.isTournament) : preflopAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, raised ? raiseCount >= 2 ? "reraise" : "raise" : "open", preStackBB, spot.isTournament);
       const actions = adv.options.map((o) => ({
         kind: o.action === "allin" ? "raise" : o.action,
         freq: o.freq,
@@ -1865,7 +1878,7 @@
         bb: spot.bb,
         top: actions[0],
         actions,
-        note: pushFoldMode ? `MTT push/fold \xB7 ${Math.round(stackBB)}bb` : "Preflop chart.",
+        note: pushFoldMode ? `MTT push/fold \xB7 ${Math.round(stackBB)}bb` : raiseCount >= 2 ? "Preflop chart \xB7 vs re-raise." : "Preflop chart.",
         solver: { backend: "chart", status: "ready" }
       };
     }
@@ -2322,14 +2335,14 @@
     // Convenience: from a raw GameState json + positions map -> recommendation.
     // opts may force a hero seat / supply hole cards, and set solve iterations.
     recommend(gs, positions, opts) {
-      const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels });
+      const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels, preflopRaiseCount: opts?.preflopRaiseCount });
       return { spot, recommendation: advise(spot, { iterations: opts?.iterations, turnIters: opts?.turnIters, solveTurn: opts?.solveTurn }) };
     },
     // Build a request for the native TexasSolver solve-server from a spot: the
     // board + both ranges (position/pot-type aware) + the metadata the client
     // needs to read the hero's node out of the returned tree. Pot/stack in bb.
     solverRequest(gs, positions, opts) {
-      const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels });
+      const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels, preflopRaiseCount: opts?.preflopRaiseCount });
       if (!spot.ok || spot.heroCards.length !== 2 || spot.activePlayers > 2 || spot.street === "preflop" || spot.street === "pre-deal") {
         return { ok: false, reason: spot.reason || "not a heads-up postflop spot" };
       }

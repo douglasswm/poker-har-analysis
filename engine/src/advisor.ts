@@ -64,12 +64,13 @@ export function advise(spot: SpotInfo, opts?: { iterations?: number; turnIters?:
   if (spot.street === "preflop") {
     const chartPos = toChartPos(spot.heroPosition || "BTN");
     const raised = spot.preflopRaised ?? (spot.toCall > spot.bb);
+    const raiseCount = spot.preflopRaiseCount || (raised ? 1 : 0);
     const limpers = spot.limpers || 0;
     // Limped pot (limpers in front, no raise): iso-raise for value, overlimp
     // speculative hands, fold trash. Otherwise the standard open / vs-raise chart.
     const adv = (!raised && limpers >= 1)
       ? isoAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, limpers, preStackBB, spot.isTournament)
-      : preflopAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, raised ? "raise" : "open", preStackBB, spot.isTournament);
+      : preflopAdvice(spot.heroCards[0], spot.heroCards[1], chartPos, raised ? (raiseCount >= 2 ? "reraise" : "raise") : "open", preStackBB, spot.isTournament);
     // Map the (possibly mixed) preflop strategy to action bars for the graph.
     const actions: ActionRec[] = adv.options.map((o) => ({
       kind: o.action === "allin" ? "raise" : o.action,
@@ -81,7 +82,7 @@ export function advise(spot: SpotInfo, opts?: { iterations?: number; turnIters?:
     return {
       headline: "", source: "chart", detail: adv.rationale, bb: spot.bb,
       top: actions[0], actions,
-      note: pushFoldMode ? `MTT push/fold · ${Math.round(stackBB)}bb` : "Preflop chart.",
+      note: pushFoldMode ? `MTT push/fold · ${Math.round(stackBB)}bb` : (raiseCount >= 2 ? "Preflop chart · vs re-raise." : "Preflop chart."),
       solver: { backend: "chart", status: "ready" }
     };
   }

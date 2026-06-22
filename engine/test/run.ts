@@ -143,6 +143,41 @@ if (betIdx >= 0) {
   check("iso: BB checks trash (free flop)", iso("72o", "BB", 3).action === "check");
   check("iso: deep stack does NOT jam over a limper", iso("KQo", "LJ", 1, 200).action === "raise" && !iso("KQo", "LJ", 1, 200).allin);
   check("iso: genuinely short (10bb) jams a value hand", !!iso("AKo", "BTN", 1, 10).allin || iso("AKo", "BTN", 1, 10).action === "allin");
+
+  const c = (code: string) => {
+    const r1 = id(RNK(code[0]), 3);
+    const suited = code.endsWith("s");
+    const r2 = id(RNK(code[1]), suited ? 3 : 2);
+    return [r1, r2];
+  };
+  const spot = (code: string, raiseCount: number): any => {
+    const [a, b] = c(code);
+    return {
+      ok: true, street: "preflop", heroCards: [a, b], board: [], pot: 24, bb: 2,
+      toCall: raiseCount >= 2 ? 18 : 6, effStack: 200, heroStack: 200,
+      heroPosition: "BTN", heroIsOOP: false, activePlayers: 3, isTournament: false,
+      ante: 0, preflopRaised: true, preflopRaiseCount: raiseCount
+    };
+  };
+  check("preflop: AJo defends vs one raise", advise(spot("AJo", 1), {}).actions![0].kind === "call", JSON.stringify(advise(spot("AJo", 1), {}).actions![0]));
+  check("preflop: AJo folds vs a re-raise", advise(spot("AJo", 2), {}).actions![0].kind === "fold", JSON.stringify(advise(spot("AJo", 2), {}).actions![0]));
+  check("preflop: AKo continues aggressively vs a re-raise", advise(spot("AKo", 2), {}).actions![0].kind === "raise", JSON.stringify(advise(spot("AKo", 2), {}).actions![0]));
+  {
+    const [a, b] = c("AJo");
+    const gs = {
+      gi: 456,
+      bbv: 2,
+      m: { r: 1 },
+      d: { c: "", p: 30 },
+      s: [
+        { dn: "Hero", c: 200, b: 0, dc: `${a};${b}` },
+        { dn: "Open", c: 200, b: 6, d: "-1;-1" },
+        { dn: "ThreeBet", c: 200, b: 18, d: "-1;-1" }
+      ]
+    };
+    const out: any = (Engine as any).recommend(gs, { 0: "BTN", 1: "CO", 2: "SB" }, { heroSeat: 0, heroCards: [a, b], preflopRaiseCount: 2 });
+    check("preflop: extension boundary passes re-raise count", out.recommendation.actions[0].kind === "fold", JSON.stringify(out.recommendation.actions[0]));
+  }
 }
 
 // ---- 6. Multiway equity heuristic (postflop, 3+ players) ----

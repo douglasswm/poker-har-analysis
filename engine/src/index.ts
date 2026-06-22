@@ -8,7 +8,7 @@ import { handCategory } from "./evaluator.js";
 import { preflopGrid, rangeGrid } from "./ranges.js";
 import * as gtomath from "./gtomath.js";
 
-type RecOpts = { iterations?: number; turnIters?: number; solveTurn?: boolean; heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean; heroBarrels?: number; villainBarrels?: number; nativeCap?: number };
+type RecOpts = { iterations?: number; turnIters?: number; solveTurn?: boolean; heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean; heroBarrels?: number; villainBarrels?: number; preflopRaiseCount?: number; nativeCap?: number };
 
 // Even-subsample a combo list to `max`, keeping the hero's exact combo.
 function capCombos<T extends { a: number; b: number }>(cs: T[], max: number, keep: number[]): T[] {
@@ -60,7 +60,7 @@ const TenganEngine = {
   // Convenience: from a raw GameState json + positions map -> recommendation.
   // opts may force a hero seat / supply hole cards, and set solve iterations.
   recommend(gs: any, positions: Record<number, string>, opts?: RecOpts) {
-    const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels });
+    const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels, preflopRaiseCount: opts?.preflopRaiseCount });
     return { spot, recommendation: advise(spot, { iterations: opts?.iterations, turnIters: opts?.turnIters, solveTurn: opts?.solveTurn }) };
   },
 
@@ -68,7 +68,7 @@ const TenganEngine = {
   // board + both ranges (position/pot-type aware) + the metadata the client
   // needs to read the hero's node out of the returned tree. Pot/stack in bb.
   solverRequest(gs: any, positions: Record<number, string>, opts?: RecOpts) {
-    const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels });
+    const spot = buildSpot(gs, positions, { heroSeat: opts?.heroSeat, heroCards: opts?.heroCards, heroRole: opts?.heroRole, villainPos: opts?.villainPos, potType: opts?.potType, heroContinued: opts?.heroContinued, villainContinued: opts?.villainContinued, heroBarrels: opts?.heroBarrels, villainBarrels: opts?.villainBarrels, preflopRaiseCount: opts?.preflopRaiseCount });
     if (!spot.ok || spot.heroCards.length !== 2 || spot.activePlayers > 2 || spot.street === "preflop" || spot.street === "pre-deal") {
       return { ok: false, reason: spot.reason || "not a heads-up postflop spot" };
     }

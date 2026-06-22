@@ -33,6 +33,7 @@ export interface SpotInfo {
   villainBarrels?: number;      // # of prior postflop streets villain bet/raised (aggressor)
   limpers?: number;             // preflop: # of limpers in front of hero (no raise)
   preflopRaised?: boolean;      // preflop: has anyone raised above the BB?
+  preflopRaiseCount?: number;   // preflop: number of bet/raise actions parsed this hand
 }
 
 const STREET: Record<number, SpotInfo["street"]> = { 1: "preflop", 2: "flop", 3: "turn", 4: "river" };
@@ -43,7 +44,7 @@ const STREET: Record<number, SpotInfo["street"]> = { 1: "preflop", 2: "flop", 3:
 export function buildSpot(
   gs: any,
   positions: Record<number, string>,
-  opts?: { heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean; heroBarrels?: number; villainBarrels?: number }
+  opts?: { heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean; heroBarrels?: number; villainBarrels?: number; preflopRaiseCount?: number }
 ): SpotInfo {
   const empty: SpotInfo = {
     ok: false, street: "pre-deal", heroCards: [], board: [], pot: 0, bb: 0,
@@ -155,6 +156,7 @@ export function buildSpot(
     heroBarrels: opts?.heroBarrels,
     villainBarrels: opts?.villainBarrels,
     limpers,
-    preflopRaised
+    preflopRaised,
+    preflopRaiseCount: opts?.preflopRaiseCount
   };
 }

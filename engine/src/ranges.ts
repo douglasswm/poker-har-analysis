@@ -119,7 +119,7 @@ const THREEBET_BB = 9;
 // 100%; hands near the edge mix it with fold (like a solver). Short stacks shove.
 export function preflopAdvice(
   c1: number, c2: number, pos: Pos,
-  facing: "open" | "raise",
+  facing: "open" | "raise" | "reraise",
   stackBB: number = 100,
   tournament: boolean = false
 ): PreflopAdvice {
@@ -128,7 +128,7 @@ export function preflopAdvice(
   // Tournament short stack: jam-or-fold. A raise we face at this depth is
   // treated as a shove to call or fold against.
   if (tournament && stackBB <= MTT_PUSHFOLD_BB) {
-    return pushFold(code, pos, stackBB, facing === "raise" ? "jam" : "open");
+    return pushFold(code, pos, stackBB, facing === "open" ? "open" : "jam");
   }
   // Nested range buckets: core = always play, std = standard, ext = sometimes.
   const core = rangeAtShift(pos, -1);
@@ -144,6 +144,7 @@ export function preflopAdvice(
   };
 
   const premium = ["AA","KK","QQ","AKs","AKo"].includes(code);
+  const strongReraiseContinue = ["JJ","TT","AQs"].includes(code);
   const shortStack = stackBB <= SHOVE_BB;
   const bbRound = Math.round(stackBB);
 
@@ -160,6 +161,18 @@ export function preflopAdvice(
     const opts: PreflopOption[] = [{ action: "raise", freq: f, sizeBB }];
     if (f < 1) opts.push({ action: "fold", freq: 1 - f });
     return { options: sortOpts(opts), rationale: f >= 1 ? `${code} opens from ${pos}.` : `${code} — borderline open from ${pos} (mix).` };
+  }
+
+  // ---- facing a re-raise (3-bet/4-bet path) ----
+  if (facing === "reraise") {
+    if (shortStack) {
+      if (premium) return { options: [{ action: "allin", freq: 1 }], rationale: `${bbRound}bb — shove ${code} over the re-raise.` };
+      if (strongReraiseContinue) return { options: sortOpts([{ action: "allin", freq: 0.5 }, { action: "fold", freq: 0.5 }]), rationale: `${bbRound}bb — ${code} is a marginal re-shove over the re-raise (mix).` };
+      return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} at ${bbRound}bb vs a re-raise.` };
+    }
+    if (premium) return { options: [{ action: "raise", freq: 1 }], rationale: `${code} — continue aggressively vs the re-raise.` };
+    if (strongReraiseContinue) return { options: sortOpts([{ action: "call", freq: 0.5 }, { action: "fold", freq: 0.5 }]), rationale: `${code} — marginal continue vs re-raise (mix).` };
+    return { options: [{ action: "fold", freq: 1 }], rationale: `Fold ${code} vs a re-raise.` };
   }
 
   // ---- facing a raise ----
@@ -265,7 +278,7 @@ export interface GridCell {
 }
 export interface PreflopGrid {
   pos: Pos;
-  facing: "open" | "raise" | "limp";
+  facing: "open" | "raise" | "reraise" | "limp";
   cells: GridCell[];      // 169 cells, row-major (row 0 = A-high)
   legend: { allin: number; raise: number; call: number; check: number; fold: number }; // % over 1326 combos
 }
@@ -274,7 +287,7 @@ export interface PreflopGrid {
 // facing "limp" = a limped pot (iso-raise over `limpers` limpers).
 export function preflopGrid(
   posLabel: string,
-  facing: "open" | "raise" | "limp",
+  facing: "open" | "raise" | "reraise" | "limp",
   stackBB: number,
   tournament: boolean = false,
   limpers: number = 1

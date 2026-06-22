@@ -203,9 +203,18 @@
           // action has genuinely reached the hero.)
           const heroToAct = live && !heroS.folded && m.ai === heroS.seat;
           if (heroToAct) {
-            let sumBets = 0;
-            for (const s of (gs.s || [])) if (s && typeof s.b === "number") sumBets += s.b;
-            const key = gs.gi + ":" + m.r + ":" + sumBets;
+            let sumBets = 0, maxBet = 0, heroBet = 0;
+            const rawSeats = gs.s || [];
+            for (let si = 0; si < rawSeats.length; si++) {
+              const s = rawSeats[si];
+              if (s && typeof s.b === "number") {
+                sumBets += s.b;
+                if (s.b > maxBet) maxBet = s.b;
+                if (si === heroS.seat) heroBet = s.b;
+              }
+            }
+            const actionCount = state.hand && state.hand.actions ? state.hand.actions.length : 0;
+            const key = gs.gi + ":" + m.r + ":" + m.ai + ":" + sumBets + ":" + maxBet + ":" + heroBet + ":" + actionCount;
             if (key !== state.lastAdviceKey) { state.lastAdviceKey = key; logDiag("hero to act · " + (STREET_NAMES[m.r] || m.r) + " · auto-advise"); runAdvice(true); }
           }
         }
@@ -746,7 +755,8 @@
       const vs = seats.find(function (s) { return s.seat === villSeat; });
       if (vs && vs.position) opts.villainPos = vs.position;
       let raises = 0;
-      for (const a of (state.hand.actions || [])) if (a.street === "preflop" && a.action === "raise") raises++;
+      for (const a of (state.hand.actions || [])) if (a.street === "preflop" && (a.action === "raise" || a.action === "bet")) raises++;
+      opts.preflopRaiseCount = raises;
       opts.potType = raises >= 2 ? "3bet" : raises === 1 ? "srp" : "limped";
 
       // Did a player call a bet on a postflop street earlier than the current
@@ -1035,8 +1045,9 @@
     }
     const posLabel = sp.heroPosition || "BTN";
     const limpers = sp.limpers || 0;
+    const preflopRaiseCount = sp.preflopRaiseCount || 0;
     const facing = (sp.street === "preflop")
-      ? (sp.preflopRaised ? "raise" : (limpers >= 1 ? "limp" : "open"))
+      ? (sp.preflopRaised ? (preflopRaiseCount >= 2 ? "reraise" : "raise") : (limpers >= 1 ? "limp" : "open"))
       : (sp.toCall > sp.bb ? "raise" : "open");
     // Preflop sizing/jam is hero-stack relative (a short limper shouldn't shrink it).
     const stackBB = sp.bb > 0 ? ((sp.street === "preflop" && sp.heroStack ? sp.heroStack : sp.effStack) / sp.bb) : 100;
@@ -1077,7 +1088,7 @@
       ? "iso vs " + Math.max(1, limpers) + " limper" + (limpers === 1 ? "" : "s")
       : jam
         ? (facing === "raise" ? "call jam" : "open-jam")
-        : (facing === "raise" ? "vs raise" : "RFI");
+        : (facing === "reraise" ? "vs re-raise" : (facing === "raise" ? "vs raise" : "RFI"));
     // Postflop with no solved grid (multiway, or solver off) → this is the preflop
     // ENTRY range, not a postflop solve. Label it honestly.
     const postflop = sp.street !== "preflop" && sp.street !== "pre-deal";
