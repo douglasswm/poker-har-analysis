@@ -212,7 +212,44 @@ if (betIdx >= 0) {
   }
 }
 
-// ---- 7. Postflop range grid (solved-range -> 13x13) ----
+// ---- 7. Folded seats must not trigger multiway fallback ----
+{
+  const ST = "cdhs", RK = "23456789TJQKA";
+  const c = (s: string) => RK.indexOf(s[0]) * 4 + ST.indexOf(s[1]);
+  const ids = (s: string) => s.match(/../g)!.map(c);
+  const hero = ids("AsAh");
+  const board = ids("Kd7c2s");
+  const gs = {
+    gi: 789,
+    bbv: 2,
+    m: { r: 2 },
+    d: { c: board.join(";"), p: 20 },
+    s: [
+      { dn: "Hero", c: 200, b: 0, dc: hero.join(";"), la: 0, s: 0 },
+      { dn: "Villain", c: 200, b: 0, d: "-1;-1", la: 0, s: 0 },
+      { dn: "Folded2", c: 200, b: 0, d: "-1;-1", la: 1, s: 0 },
+      { dn: "Folded3", c: 200, b: 0, d: "-1;-1", la: 1, s: 0 },
+      { dn: "Folded4", c: 200, b: 0, d: "-1;-1", la: 1, s: 0 },
+      { dn: "Folded5", c: 200, b: 0, d: "-1;-1", la: 1, s: 0 },
+      { dn: "Folded6", c: 200, b: 0, d: "-1;-1", la: 1, s: 0 },
+      { dn: "Folded7", c: 200, b: 0, d: "-1;-1", la: 1, s: 0 },
+      { dn: "Folded8", c: 200, b: 0, d: "-1;-1", la: 1, s: 0 }
+    ]
+  };
+  const out: any = (Engine as any).recommend(gs, {
+    0: "BB", 1: "BTN", 2: "SB", 3: "UTG", 4: "LJ", 5: "HJ", 6: "CO", 7: "MP", 8: "EP"
+  }, {
+    heroSeat: 0,
+    heroCards: hero,
+    heroRole: "caller",
+    villainPos: "BTN",
+    potType: "srp"
+  });
+  check("folded seats: only live players count active", out.spot.activePlayers === 2, `active=${out.spot.activePlayers}`);
+  check("folded seats: HUD does not show multiway fallback", out.recommendation.solver?.detail !== "multiway approximate", JSON.stringify(out.recommendation.solver));
+}
+
+// ---- 8. Postflop range grid (solved-range -> 13x13) ----
 {
   const ST = "cdhs", RK = "23456789TJQKA";
   const c = (s: string) => RK.indexOf(s[0]) * 4 + ST.indexOf(s[1]);
@@ -230,7 +267,7 @@ if (betIdx >= 0) {
   check("grid: AA bets (in range, single combo)", (find("AA").options.find((o) => o.action === "bet") || { freq: 0 }).freq > 0.99);
 }
 
-// ---- 8. Native solver request metadata (extension boundary) ----
+// ---- 9. Native solver request metadata (extension boundary) ----
 {
   const ST = "cdhs", RK = "23456789TJQKA";
   const c = (s: string) => RK.indexOf(s[0]) * 4 + ST.indexOf(s[1]);
@@ -261,7 +298,7 @@ if (betIdx >= 0) {
   check("native request: carries range diagnostics", req.range && req.range.filters.includes("villain:barrel-filtered") && req.range.heroCombos > 0 && req.range.villainCombos > 0, JSON.stringify(req.range));
 }
 
-// ---- 9. Native TexasSolver response -> HUD recommendation ----
+// ---- 10. Native TexasSolver response -> HUD recommendation ----
 {
   const tree: any = {
     actions: ["CHECK", "BET 3.000000", "BET 100.000000"],

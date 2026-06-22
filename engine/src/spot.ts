@@ -38,6 +38,10 @@ export interface SpotInfo {
 
 const STREET: Record<number, SpotInfo["street"]> = { 1: "preflop", 2: "flop", 3: "turn", 4: "river" };
 
+function isFoldedSeat(s: any): boolean {
+  return s?.la === 1 || s?.folded === true;
+}
+
 // positions param: map seatIndex -> position label (from parser).
 // opts: optionally force a hero seat and/or supply hole cards (for studying any
 // seat, since opponents' cards are hidden in the stream).
@@ -86,7 +90,7 @@ export function buildSpot(
   for (let i = 0; i < seats.length; i++) {
     const s = seats[i];
     if (!s || !s.dn) continue;
-    const folded = s.s === 4;
+    const folded = isFoldedSeat(s);
     if (!folded) { active++; if (typeof s.c === "number") minStack = Math.min(minStack, s.c); }
     if (typeof s.b === "number" && !folded) maxBet = Math.max(maxBet, s.b);
     if (i === heroSeat && typeof s.b === "number") heroBet = s.b;
@@ -112,7 +116,7 @@ export function buildSpot(
   if (street === "preflop" && !preflopRaised) {
     for (let i = 0; i < seats.length; i++) {
       const s = seats[i];
-      if (!s || !s.dn || s.s === 4) continue;          // empty / folded
+      if (!s || !s.dn || isFoldedSeat(s)) continue;    // empty / folded
       if (i === heroSeat) continue;                     // not the hero
       if (positions[i] === "BB") continue;              // BB post is not a limp
       if (typeof s.b === "number" && s.b === bb) limpers++;

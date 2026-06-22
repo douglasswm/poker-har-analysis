@@ -22,3 +22,7 @@
   both verification scripts and the HUD. If parsing stays hidden inside
   `bridge.js`, real solver JSON can return successfully while HUD presentation
   remains unverified.
+- Raw table fold state must use `la === 1` or the parsed `folded` boolean, not
+  the seat-state `s` field. Active-player counts, limper detection, stack scans,
+  and bet scans need one shared fold predicate so folded seats cannot force a
+  false multiway fallback.

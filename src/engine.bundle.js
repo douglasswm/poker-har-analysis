@@ -30,6 +30,9 @@
 
   // engine/src/spot.ts
   var STREET = { 1: "preflop", 2: "flop", 3: "turn", 4: "river" };
+  function isFoldedSeat(s) {
+    return s?.la === 1 || s?.folded === true;
+  }
   function buildSpot(gs, positions, opts) {
     const empty = {
       ok: false,
@@ -74,7 +77,7 @@
     for (let i = 0; i < seats.length; i++) {
       const s = seats[i];
       if (!s || !s.dn) continue;
-      const folded = s.s === 4;
+      const folded = isFoldedSeat(s);
       if (!folded) {
         active++;
         if (typeof s.c === "number") minStack = Math.min(minStack, s.c);
@@ -94,7 +97,7 @@
     if (street === "preflop" && !preflopRaised) {
       for (let i = 0; i < seats.length; i++) {
         const s = seats[i];
-        if (!s || !s.dn || s.s === 4) continue;
+        if (!s || !s.dn || isFoldedSeat(s)) continue;
         if (i === heroSeat) continue;
         if (positions[i] === "BB") continue;
         if (typeof s.b === "number" && s.b === bb) limpers++;
