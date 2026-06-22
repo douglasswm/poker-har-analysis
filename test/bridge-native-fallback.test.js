@@ -8,5 +8,6 @@ assert.match(src, /nativeDispatched = dispatchNative\(req, gs, positions, opts, 
 assert.doesNotMatch(src, /if \(dispatchNative\(req, gs, positions, opts, id\)\) return;/);
 assert.match(src, /state\.nativeSolvedId === d\.id/);
 assert.match(src, /native beat the fallback worker/);
+assert.match(src, /window\.TenganEngine\.nativeRecommendation/);
 
 console.log("PASS bridge native fallback keeps worker solve visible");

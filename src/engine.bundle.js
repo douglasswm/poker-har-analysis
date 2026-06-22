@@ -2281,6 +2281,136 @@
     };
   }
 
+  // engine/src/native.ts
+  function betChild(node, targetBB) {
+    if (!node || !node.childrens) return null;
+    let best = null, bestd = 1e9;
+    for (const k in node.childrens) {
+      const m = /^(BET|RAISE)\s+([\d.]+)/.exec(k);
+      if (!m) continue;
+      const d = Math.abs(parseFloat(m[2]) - targetBB);
+      if (d < bestd) {
+        bestd = d;
+        best = node.childrens[k];
+      }
+    }
+    return best;
+  }
+  function childForAction(node, a) {
+    const ch = node && node.childrens;
+    if (!ch) return null;
+    if (a.kind === "check") return ch["CHECK"] || null;
+    if (a.kind === "call") return ch["CALL"] || null;
+    const pick = (pref2) => {
+      let best = null, bestd = 1e9;
+      for (const k in ch) {
+        const m = new RegExp("^" + pref2 + "\\s+([\\d.]+)").exec(k);
+        if (!m) continue;
+        const d = Math.abs(parseFloat(m[1]) - a.amtBB);
+        if (d < bestd) {
+          bestd = d;
+          best = ch[k];
+        }
+      }
+      return best;
+    };
+    const pref = a.kind === "raise" ? "RAISE" : "BET";
+    return pick(pref) || pick(pref === "RAISE" ? "BET" : "RAISE");
+  }
+  function navByReplay(tree, req) {
+    let node = tree;
+    for (let i = 0; i < (req.streetActions || []).length; i++) {
+      node = childForAction(node, req.streetActions[i]);
+      if (!node) return null;
+    }
+    return node;
+  }
+  function navByHeuristic(tree, req) {
+    if (!(req.toCall > 0)) {
+      return req.heroIsOOP ? tree : tree.childrens && tree.childrens["CHECK"];
+    }
+    const target = req.toCall / (req.bb || 1);
+    return req.heroIsOOP ? betChild(tree.childrens && tree.childrens["CHECK"], target) : betChild(tree, target);
+  }
+  function nativeNodeForHero(tree, req) {
+    if (Array.isArray(req.streetActions)) {
+      const n = navByReplay(tree, req);
+      if (n && n.strategy && n.strategy.actions) return n;
+    }
+    return navByHeuristic(tree, req);
+  }
+  function extractNativeActions(tree, req) {
+    const node = nativeNodeForHero(tree, req);
+    const strat = node && node.strategy;
+    if (!strat || !strat.actions || !strat.strategy) return null;
+    const acts = strat.actions;
+    const key = req.heroCardStr[0] + req.heroCardStr[1];
+    const fr = strat.strategy[key] || strat.strategy[req.heroCardStr[1] + req.heroCardStr[0]];
+    if (!fr) return null;
+    const bb = req.bb || 1;
+    const out = [];
+    for (let i = 0; i < acts.length; i++) {
+      const a = acts[i], f = fr[i] || 0;
+      if (f <= 4e-3) continue;
+      let kind = "check", allin = false, potFrac, amount;
+      if (/^FOLD/.test(a)) kind = "fold";
+      else if (/^CALL/.test(a)) kind = "call";
+      else if (/^(BET|RAISE)/.test(a)) {
+        kind = /^BET/.test(a) ? "bet" : "raise";
+        const amtBB = parseFloat(a.split(" ")[1]);
+        allin = amtBB >= (req.effStack || 1e9) * 0.98;
+        amount = Math.round(amtBB * bb);
+        if (!allin) potFrac = +(amtBB / (req.pot || 1)).toFixed(2);
+      }
+      out.push({ kind, freq: f, allin, potFrac, amount });
+    }
+    out.sort((x, y) => y.freq - x.freq);
+    return out.length ? out : null;
+  }
+  function nativeGridFromStrategy(stratNode, effStackBB) {
+    if (!stratNode || !stratNode.actions || !stratNode.strategy) return null;
+    const kinds = stratNode.actions.map((a) => {
+      if (/^CHECK/.test(a)) return "check";
+      if (/^CALL/.test(a)) return "call";
+      if (/^FOLD/.test(a)) return "fold";
+      const m = /^(BET|RAISE)\s+([\d.]+)/.exec(a);
+      if (m) {
+        const amt = parseFloat(m[2]);
+        const allin = amt >= (effStackBB || 1e9) * 0.98;
+        return allin ? "allin" : m[1] === "BET" ? "bet" : "raise";
+      }
+      return "check";
+    });
+    const cid = (s) => RANKS.indexOf(s[0]) * 4 + SUITS.indexOf(s[1]);
+    const combos = [];
+    for (const k of Object.keys(stratNode.strategy)) {
+      const ids = k.match(/../g);
+      if (!ids || ids.length !== 2) continue;
+      const a = cid(ids[0]), b = cid(ids[1]);
+      if (a < 0 || b < 0 || a > 51 || b > 51) continue;
+      combos.push({ a, b, freqs: stratNode.strategy[k] });
+    }
+    return rangeGrid(kinds, combos);
+  }
+  function nativeRecommendation(tree, req, base, ms) {
+    const actions = extractNativeActions(tree, req);
+    if (!actions || !actions.length) return null;
+    const node = nativeNodeForHero(tree, req);
+    const grid = node && node.strategy ? nativeGridFromStrategy(node.strategy, req.effStack) : null;
+    return {
+      headline: "",
+      source: "solver",
+      bb: base?.bb || req.bb,
+      detail: req.street.charAt(0).toUpperCase() + req.street.slice(1) + " GTO solve \u2014 native TexasSolver, range vs range.",
+      top: actions[0],
+      actions,
+      rangeGrid: grid || void 0,
+      note: "True solve (native TexasSolver \xB7 " + req.street + ") \xB7 " + (ms ? Math.round(ms / 1e3) + "s" : ""),
+      solver: { backend: "native-texassolver", status: "ready", detail: req.street },
+      range: req.range || base?.range
+    };
+  }
+
   // engine/src/index.ts
   function capCombos(cs, max, keep) {
     if (cs.length <= max) return cs;
@@ -2304,34 +2434,12 @@
     preflopGrid,
     // 13x13 strategy matrix for a position/facing/stack
     gtomath: gtomath_exports,
-    // Build a 13x13 solved-range grid from a native TexasSolver decision node
-    // (node.strategy = { actions:[labels], strategy:{combo: [freqs]} }). effStackBB
-    // tells bet/allin apart. Returns a RangeGrid the HUD can render.
-    nativeGrid(stratNode, effStackBB) {
-      if (!stratNode || !stratNode.actions || !stratNode.strategy) return null;
-      const kinds = stratNode.actions.map((a) => {
-        if (/^CHECK/.test(a)) return "check";
-        if (/^CALL/.test(a)) return "call";
-        if (/^FOLD/.test(a)) return "fold";
-        const m = /^(BET|RAISE)\s+([\d.]+)/.exec(a);
-        if (m) {
-          const amt = parseFloat(m[2]);
-          const allin = amt >= (effStackBB || 1e9) * 0.98;
-          return allin ? "allin" : m[1] === "BET" ? "bet" : "raise";
-        }
-        return "check";
-      });
-      const cid = (s) => RANKS.indexOf(s[0]) * 4 + SUITS.indexOf(s[1]);
-      const combos = [];
-      for (const k of Object.keys(stratNode.strategy)) {
-        const ids = k.match(/../g);
-        if (!ids || ids.length !== 2) continue;
-        const a = cid(ids[0]), b = cid(ids[1]);
-        if (a < 0 || b < 0 || a > 51 || b > 51) continue;
-        combos.push({ a, b, freqs: stratNode.strategy[k] });
-      }
-      return rangeGrid(kinds, combos);
-    },
+    // Native TexasSolver response interpretation. The bridge/HUD and verification
+    // scripts use the same path so real solver JSON becomes HUD actions reliably.
+    nativeNodeForHero,
+    extractNativeActions,
+    nativeRecommendation,
+    nativeGrid: nativeGridFromStrategy,
     // Convenience: from a raw GameState json + positions map -> recommendation.
     // opts may force a hero seat / supply hole cards, and set solve iterations.
     recommend(gs, positions, opts) {

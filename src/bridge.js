@@ -564,19 +564,6 @@
   };
   function betTree() { return BET_TREE[state.solveDepth] || BET_TREE.normal; }
 
-  // Navigate the solved tree to the node where the hero is about to act, given
-  // the betting so far. Root = OOP's first action on the solved street.
-  function betChild(node, targetBB) {
-    if (!node || !node.childrens) return null;
-    let best = null, bestd = 1e9;
-    for (const k in node.childrens) {
-      const m = /^(BET|RAISE)\s+([\d.]+)/.exec(k);
-      if (!m) continue;
-      const d = Math.abs(parseFloat(m[2]) - targetBB);
-      if (d < bestd) { bestd = d; best = node.childrens[k]; }
-    }
-    return best;
-  }
   // This street's betting actions in play order (for deep tree navigation), each
   // as { kind, amtBB } where amtBB is the player's TOTAL committed this street in
   // big blinds — matching TexasSolver's total-amount child labels ("BET 2",
@@ -591,87 +578,6 @@
       out.push({ kind: a.action, amtBB: (a.toAmount || 0) / bb });
     }
     return out;
-  }
-
-  // Pick the child of `node` matching one logged action. check/call match by
-  // label; bet/raise match the closest size of the right type (falling back to
-  // the opposite type if the tree labels the same chips-in differently).
-  function childForAction(node, a) {
-    const ch = node && node.childrens; if (!ch) return null;
-    if (a.kind === "check") return ch["CHECK"] || null;
-    if (a.kind === "call") return ch["CALL"] || null;
-    const pick = (pref) => {
-      let best = null, bestd = 1e9;
-      for (const k in ch) {
-        const m = new RegExp("^" + pref + "\\s+([\\d.]+)").exec(k);
-        if (!m) continue;
-        const d = Math.abs(parseFloat(m[1]) - a.amtBB);
-        if (d < bestd) { bestd = d; best = ch[k]; }
-      }
-      return best;
-    };
-    const pref = a.kind === "raise" ? "RAISE" : "BET";
-    return pick(pref) || pick(pref === "RAISE" ? "BET" : "RAISE");
-  }
-
-  // Replay this street's actions from the root to the node where hero acts now.
-  function navByReplay(tree, req) {
-    let node = tree;
-    for (let i = 0; i < req.streetActions.length; i++) {
-      node = childForAction(node, req.streetActions[i]);
-      if (!node) return null;
-    }
-    return node;
-  }
-
-  // One-level heuristic nav (the proven fallback): hero first to act, checked-to,
-  // or facing the first bet.
-  function navByHeuristic(tree, req) {
-    if (!(req.toCall > 0)) {
-      return req.heroIsOOP ? tree : (tree.childrens && tree.childrens["CHECK"]);
-    }
-    const target = req.toCall / (req.bb || 1);
-    return req.heroIsOOP ? betChild(tree.childrens && tree.childrens["CHECK"], target) : betChild(tree, target);
-  }
-
-  function nodeForHero(tree, req) {
-    // Prefer replaying the real action sequence (handles raises / re-raises);
-    // fall back to the one-level heuristic if it doesn't cleanly resolve.
-    if (Array.isArray(req.streetActions)) {
-      const n = navByReplay(tree, req);
-      if (n && n.strategy && n.strategy.actions) return n;
-    }
-    return navByHeuristic(tree, req);
-  }
-
-  // Read the hero's strategy out of a returned TexasSolver tree (any street).
-  function extractNative(tree, req) {
-    const node = nodeForHero(tree, req);
-    const strat = node && node.strategy;
-    if (!strat || !strat.actions || !strat.strategy) return null;
-    const acts = strat.actions;
-    const key = req.heroCardStr[0] + req.heroCardStr[1];
-    const fr = strat.strategy[key] || strat.strategy[req.heroCardStr[1] + req.heroCardStr[0]];
-    if (!fr) return null;
-    const bb = req.bb || 1;
-    const out = [];
-    for (let i = 0; i < acts.length; i++) {
-      const a = acts[i], f = fr[i] || 0;
-      if (f <= 0.004) continue;
-      let kind = "check", allin = false, potFrac, amount;
-      if (/^FOLD/.test(a)) kind = "fold";
-      else if (/^CALL/.test(a)) kind = "call";
-      else if (/^(BET|RAISE)/.test(a)) {
-        kind = /^BET/.test(a) ? "bet" : "raise";
-        const amtBB = parseFloat(a.split(" ")[1]);
-        allin = amtBB >= (req.effStack || 1e9) * 0.98;
-        amount = Math.round(amtBB * bb);
-        if (!allin) potFrac = +(amtBB / (req.pot || 1)).toFixed(2);
-      }
-      out.push({ kind: kind, freq: f, allin: allin, potFrac: potFrac, amount: amount });
-    }
-    out.sort(function (x, y) { return y.freq - x.freq; });
-    return out.length ? out : null;
   }
 
   // Render the in-engine fallback instantly, then upgrade to the native solve
@@ -705,22 +611,9 @@
           logDiag("native solve error: " + detail);
           return;
         } // keep heuristic
-        const actions = extractNative(j.strategy, req);
-        if (!actions || !actions.length) { if (seq === state.nativeStatusSeq) setNativeStatus("error", "no hero node", true); logDiag("native solve: hero node not found, kept heuristic"); return; }
-        // Build the solved-range grid (true GTO) from the hero's decision node.
-        let grid = null;
-        try {
-          const node = nodeForHero(j.strategy, req);
-          if (node && node.strategy && window.TenganEngine.nativeGrid) grid = window.TenganEngine.nativeGrid(node.strategy, req.effStack);
-        } catch (e) {}
-        base.recommendation = {
-          headline: "", source: "solver", bb: base.recommendation.bb,
-          detail: req.street.charAt(0).toUpperCase() + req.street.slice(1) + " GTO solve — native TexasSolver, range vs range.",
-          top: actions[0], actions: actions, rangeGrid: grid,
-          note: "True solve (native TexasSolver · " + req.street + ") · " + (j.ms ? Math.round(j.ms / 1000) + "s" : ""),
-          solver: { backend: "native-texassolver", status: "ready", detail: req.street },
-          range: req.range || base.recommendation.range
-        };
+        const nativeRec = window.TenganEngine.nativeRecommendation && window.TenganEngine.nativeRecommendation(j.strategy, req, base.recommendation, j.ms);
+        if (!nativeRec || !nativeRec.actions || !nativeRec.actions.length) { if (seq === state.nativeStatusSeq) setNativeStatus("error", "no hero node", true); logDiag("native solve: hero node not found, kept heuristic"); return; }
+        base.recommendation = nativeRec;
         state.nativeSolvedId = id;
         if (seq === state.nativeStatusSeq) setNativeStatus("solved", req.street + " · " + (j.ms ? Math.round(j.ms / 1000) + "s" : "?"), false);
         state.advice = base; renderAdvice();

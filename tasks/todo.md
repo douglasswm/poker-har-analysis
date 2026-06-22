@@ -1,25 +1,27 @@
-# Native Solver Real Backend Setup
+# Native Solver HUD Presentation Verification
 
 ## Plan
 
-- [x] Confirm current worktree, package scripts, ignore rules, and lessons.
-- [x] Correct the `.solver.env` filename confusion.
-- [x] Download and wire the official TexasSolver macOS release as the real backend.
-- [x] Verify the real backend with health and a minimal `/solve` request.
-- [x] Add an installer script so real-backend setup is repeatable.
-- [x] Update docs and lessons to distinguish real backend setup from test doubles.
-- [x] Verify installer/start/check paths plus full repo checks.
+- [x] Confirm current worktree and native solver local config.
+- [x] Identify the exact HUD seam that interprets native TexasSolver JSON.
+- [x] Build a real-response verification command that asserts HUD-displayable actions.
+- [x] Fix or refactor if the seam cannot be verified directly.
+- [x] Run focused real-solver verification and full repo checks.
 - [x] Document review results.
 
 ## Review
 
-- `.solver.env` now points at the real official TexasSolver macOS release under
-  the ignored `.solver-bin/` directory.
-- Added `npm run solver:install`, which downloads the official GitHub macOS
-  release, extracts it, chmods `console_solver`, and writes `.solver.env`.
-- Verified `npm run solver:install` succeeds outside the sandbox.
-- Verified `npm run solver` starts the real TexasSolver-backed server and
-  `npm run solver:check` reports ready.
-- Verified a minimal real `/solve` request returns a TexasSolver strategy
-  (`ms` around 7.7s in the probe).
+- Moved native TexasSolver response interpretation into a shared engine API:
+  `nativeRecommendation`, `extractNativeActions`, `nativeNodeForHero`, and
+  `nativeGrid`.
+- Updated the HUD bridge to use `window.TenganEngine.nativeRecommendation()` for
+  the same parsed recommendation object that verification uses.
+- Added `npm run solver:verify-hud`, which starts the real local solver if
+  needed, performs a real tiny `/solve`, and asserts the returned tree becomes
+  HUD-displayable actions plus a 169-cell solved range grid.
+- Real verifier output included:
+  `HUD native headline: BET $0.06 (3.0BB) (50%)`,
+  `HUD native rows: bet $0.06 (3.0bb) 50% / all-in 50%`,
+  `HUD native note: True solve (native TexasSolver · flop) · 7s`, and
+  `HUD native range grid: 169 cells`.
 - Full `npm test`, `npm run typecheck`, and `npm run build` pass.

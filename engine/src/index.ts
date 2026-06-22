@@ -5,8 +5,9 @@ import { advise } from "./advisor.js";
 import { riverRanges, solveCombos, rangeDiagnostics } from "./rangebuilder.js";
 import { cardStr, rankOf, suitOf, RANKS, SUITS } from "./cards.js";
 import { handCategory } from "./evaluator.js";
-import { preflopGrid, rangeGrid } from "./ranges.js";
+import { preflopGrid } from "./ranges.js";
 import * as gtomath from "./gtomath.js";
+import { extractNativeActions, nativeGridFromStrategy, nativeNodeForHero, nativeRecommendation } from "./native.js";
 
 type RecOpts = { iterations?: number; turnIters?: number; solveTurn?: boolean; heroSeat?: number; heroCards?: number[]; heroRole?: "aggressor" | "caller"; villainPos?: string; potType?: "limped" | "srp" | "3bet"; heroContinued?: boolean; villainContinued?: boolean; heroBarrels?: number; villainBarrels?: number; preflopRaiseCount?: number; nativeCap?: number };
 
@@ -33,30 +34,12 @@ const TenganEngine = {
   preflopGrid,    // 13x13 strategy matrix for a position/facing/stack
   gtomath,
 
-  // Build a 13x13 solved-range grid from a native TexasSolver decision node
-  // (node.strategy = { actions:[labels], strategy:{combo: [freqs]} }). effStackBB
-  // tells bet/allin apart. Returns a RangeGrid the HUD can render.
-  nativeGrid(stratNode: any, effStackBB: number) {
-    if (!stratNode || !stratNode.actions || !stratNode.strategy) return null;
-    const kinds = stratNode.actions.map((a: string) => {
-      if (/^CHECK/.test(a)) return "check";
-      if (/^CALL/.test(a)) return "call";
-      if (/^FOLD/.test(a)) return "fold";
-      const m = /^(BET|RAISE)\s+([\d.]+)/.exec(a);
-      if (m) { const amt = parseFloat(m[2]); const allin = amt >= (effStackBB || 1e9) * 0.98; return allin ? "allin" : (m[1] === "BET" ? "bet" : "raise"); }
-      return "check";
-    });
-    const cid = (s: string) => RANKS.indexOf(s[0]) * 4 + SUITS.indexOf(s[1]);
-    const combos: { a: number; b: number; freqs: number[] }[] = [];
-    for (const k of Object.keys(stratNode.strategy)) {
-      const ids = k.match(/../g);
-      if (!ids || ids.length !== 2) continue;
-      const a = cid(ids[0]), b = cid(ids[1]);
-      if (a < 0 || b < 0 || a > 51 || b > 51) continue;
-      combos.push({ a, b, freqs: stratNode.strategy[k] });
-    }
-    return rangeGrid(kinds, combos);
-  },
+  // Native TexasSolver response interpretation. The bridge/HUD and verification
+  // scripts use the same path so real solver JSON becomes HUD actions reliably.
+  nativeNodeForHero,
+  extractNativeActions,
+  nativeRecommendation,
+  nativeGrid: nativeGridFromStrategy,
   // Convenience: from a raw GameState json + positions map -> recommendation.
   // opts may force a hero seat / supply hole cards, and set solve iterations.
   recommend(gs: any, positions: Record<number, string>, opts?: RecOpts) {

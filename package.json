@@ -15,6 +15,7 @@
     "solver:server": "node solver-server/server.js",
     "solver:check": "node scripts/check-solver-server.mjs",
     "solver:install": "node scripts/install-solver.mjs",
+    "solver:verify-hud": "node scripts/verify-native-hud.mjs",
     "typecheck": "tsc -p engine/tsconfig.json --noEmit"
   },
   "devDependencies": {

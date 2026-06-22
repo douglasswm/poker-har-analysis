@@ -57,6 +57,10 @@ The health endpoint now validates both the executable and the `resources/`
 directory, so a running server with a missing backend reports a configuration
 error instead of pretending to be ready.
 
+End-to-end HUD parser check: `npm run solver:verify-hud`. It runs a tiny real
+TexasSolver solve and asserts that the returned tree becomes HUD-displayable
+actions plus a 169-cell solved range grid.
+
 ## 3. Request protocol
 
 `POST /solve` with JSON:

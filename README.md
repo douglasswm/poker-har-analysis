@@ -168,6 +168,7 @@ npm run typecheck  # tsc --noEmit
 npm run solver:install
 npm run solver     # local native TexasSolver HTTP server, reads .solver.env
 npm run solver:check
+npm run solver:verify-hud
 ```
 
 `npm run dev` watches `engine/src/*.ts` and writes `src/engine.bundle.js`. After
@@ -179,7 +180,9 @@ from this root folder.
 
 For native postflop solves on macOS, run `npm run solver:install` once, then run
 `npm run solver` before using the HUD's solver toggle. Manual installs can still
-use `.solver.env.example` as the template.
+use `.solver.env.example` as the template. `npm run solver:verify-hud` runs a
+real tiny TexasSolver solve and verifies that the response becomes HUD-displayable
+actions and a solved range grid.
 
 ### Honest limitations of the advisor
 

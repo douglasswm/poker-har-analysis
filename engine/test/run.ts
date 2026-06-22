@@ -261,5 +261,37 @@ if (betIdx >= 0) {
   check("native request: carries range diagnostics", req.range && req.range.filters.includes("villain:barrel-filtered") && req.range.heroCombos > 0 && req.range.villainCombos > 0, JSON.stringify(req.range));
 }
 
+// ---- 9. Native TexasSolver response -> HUD recommendation ----
+{
+  const tree: any = {
+    actions: ["CHECK", "BET 3.000000", "BET 100.000000"],
+    strategy: {
+      actions: ["CHECK", "BET 3.000000", "BET 100.000000"],
+      strategy: {
+        AsAh: [0.1, 0.8, 0.1],
+        KdKc: [0.9, 0.1, 0]
+      }
+    },
+    childrens: {}
+  };
+  const req: any = {
+    heroIsOOP: true,
+    heroCardStr: ["As", "Ah"],
+    toCall: 0,
+    bb: 2,
+    pot: 6,
+    effStack: 100,
+    street: "flop",
+    streetActions: [],
+    range: { heroCombos: 6, villainCombos: 6, filters: [] }
+  };
+  const rec: any = (Engine as any).nativeRecommendation(tree, req, { bb: 2 }, 7709);
+  check("native response: extracts HUD actions", rec && rec.actions.length === 3 && rec.top.kind === "bet", JSON.stringify(rec && rec.actions));
+  check("native response: converts bet to chip amount and pot fraction", rec.top.amount === 6 && rec.top.potFrac === 0.5, JSON.stringify(rec.top));
+  check("native response: all-in is displayable", rec.actions.some((a: any) => a.allin && a.amount === 200), JSON.stringify(rec.actions));
+  check("native response: builds solved range grid", rec.rangeGrid && rec.rangeGrid.cells.length === 169 && rec.rangeGrid.cells.find((c: any) => c.code === "AA").inRange);
+  check("native response: labels native solver source", rec.solver.backend === "native-texassolver" && /native TexasSolver/.test(rec.note), rec.note);
+}
+
 console.log(`\n${failures === 0 ? "ALL TESTS PASSED ✅" : failures + " TEST(S) FAILED ❌"}`);
 process.exit(failures ? 1 : 0);

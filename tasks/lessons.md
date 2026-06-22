@@ -18,3 +18,7 @@
   user-facing native-solver setup must clearly bind to a real TexasSolver binary.
   Explain test doubles explicitly before using them so they are not mistaken for
   production wiring.
+- Native solver response parsing must live behind a shared, testable API used by
+  both verification scripts and the HUD. If parsing stays hidden inside
+  `bridge.js`, real solver JSON can return successfully while HUD presentation
+  remains unverified.
