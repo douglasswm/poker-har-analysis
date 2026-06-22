@@ -1,7 +1,8 @@
 // Bundle entry — attaches the engine to the global scope so the extension's
 // content script can call it directly. Built to ../src/engine.bundle.js.
 import { buildSpot } from "./spot.js";
-import { advise, riverRanges, solveCombos } from "./advisor.js";
+import { advise } from "./advisor.js";
+import { riverRanges, solveCombos, rangeDiagnostics } from "./rangebuilder.js";
 import { cardStr, rankOf, suitOf, RANKS, SUITS } from "./cards.js";
 import { handCategory } from "./evaluator.js";
 import { preflopGrid, rangeGrid } from "./ranges.js";
@@ -100,7 +101,8 @@ const TenganEngine = {
       heroCardStr: spot.heroCards.map(tsCard),
       toCall: spot.toCall,
       bb,
-      street: spot.street
+      street: spot.street,
+      range: rangeDiagnostics(spot)
     };
   }
 };

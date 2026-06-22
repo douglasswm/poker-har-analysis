@@ -114,6 +114,9 @@
     diag: [],                  // rolling diagnostics event log [{t, msg}]
     connSeen: {},              // socket connection -> frame count
     lastNative: null,          // last native-solver outcome string
+    nativeStatus: "off",       // off | checking | ready | unreachable | error | solving | solved | timeout
+    nativeStatusDetail: "",
+    nativeStatusSeq: 0,
     _frontSeen: false,         // logged the first 'front' frame yet?
     _lastDiagAdvice: null      // dedupe key for advice diag lines
   };
@@ -504,6 +507,31 @@
     deep:   { maxIter: 200, accuracy: 0.25, cap: 700 }
   };
   function depthCfg() { return DEPTH[state.solveDepth] || DEPTH.normal; }
+  const NATIVE_TIMEOUT = { fast: 8000, normal: 25000, deep: 60000 };
+  function nativeTimeoutMs() { return NATIVE_TIMEOUT[state.solveDepth] || NATIVE_TIMEOUT.normal; }
+  function setNativeStatus(status, detail, render) {
+    state.nativeStatus = status;
+    state.nativeStatusDetail = detail || "";
+    state.lastNative = status + (detail ? ": " + detail : "");
+    if (render && els) renderAdvice();
+  }
+  function nativeStatusText() {
+    if (!state.nativeSolve) return "off";
+    return state.nativeStatus + (state.nativeStatusDetail ? " · " + state.nativeStatusDetail : "");
+  }
+  function nativeStatusClass() {
+    if (state.nativeStatus === "ready" || state.nativeStatus === "solved") return "good";
+    if (state.nativeStatus === "checking" || state.nativeStatus === "solving") return "muted";
+    return "warn";
+  }
+  function checkNativeSolver() {
+    if (!state.nativeSolve) { setNativeStatus("off", "", true); return; }
+    const seq = ++state.nativeStatusSeq;
+    setNativeStatus("checking", "health", true);
+    fetch(SOLVER_URL + "/")
+      .then(function (r) { if (seq !== state.nativeStatusSeq || state.nativeStatus === "solving") return; setNativeStatus(r.ok ? "ready" : "error", r.ok ? SOLVER_URL : "health " + r.status, true); })
+      .catch(function () { if (seq !== state.nativeStatusSeq || state.nativeStatus === "solving") return; setNativeStatus("unreachable", SOLVER_URL, true); });
+  }
 
   // Bet-tree richness per depth preset (sizes are % of pot). More sizes = sharper
   // sizing strategy but a wider tree (slower). Fast mirrors the original single
@@ -625,12 +653,12 @@
     return out.length ? out : null;
   }
 
-  // Render the in-engine heuristic instantly, then upgrade to the native solve
-  // when it returns; on any failure keep the heuristic. Flop, heads-up, checked-to.
+  // Render the in-engine fallback instantly, then upgrade to the native solve
+  // when it returns; on any failure keep the fallback.
   function dispatchNative(req, gs, positions, opts, id) {
     let base;
     try { base = window.TenganEngine.recommend(gs, positions, opts); } catch (e) { return false; }
-    state.advice = base; renderAdvice();   // instant heuristic baseline
+    state.advice = base;                   // instant heuristic baseline
     const d = depthCfg();
     const body = JSON.stringify({
       board: req.board, pot: req.pot, effStack: req.effStack,
@@ -638,14 +666,21 @@
       accuracy: d.accuracy, maxIter: d.maxIter, threads: state.solveThreads || 4,
       tree: betTree()
     });
-    logDiag("native solve → " + SOLVER_URL + " · " + req.street + " · " + state.solveDepth);
-    fetch(SOLVER_URL + "/solve", { method: "POST", headers: { "Content-Type": "application/json" }, body: body })
+    const seq = ++state.nativeStatusSeq;
+    const timeoutMs = nativeTimeoutMs();
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
+    setNativeStatus("solving", req.street + " · " + state.solveDepth, false);
+    renderAdvice();
+    logDiag("native solve → " + SOLVER_URL + " · " + req.street + " · " + state.solveDepth + " · timeout " + timeoutMs + "ms");
+    fetch(SOLVER_URL + "/solve", { method: "POST", headers: { "Content-Type": "application/json" }, body: body, signal: ctrl ? ctrl.signal : undefined })
       .then(function (r) { return r.json(); })
       .then(function (j) {
+        if (timer) clearTimeout(timer);
         if (id !== state.latestSolveId || !els) return;
-        if (j.error) { state.lastNative = "error: " + j.error; logDiag("native solve error: " + j.error); return; } // keep heuristic
+        if (j.error) { if (seq === state.nativeStatusSeq) setNativeStatus("error", j.error, true); logDiag("native solve error: " + j.error); return; } // keep heuristic
         const actions = extractNative(j.strategy, req);
-        if (!actions || !actions.length) { state.lastNative = "no hero node (kept heuristic)"; logDiag("native solve: hero node not found, kept heuristic"); return; }
+        if (!actions || !actions.length) { if (seq === state.nativeStatusSeq) setNativeStatus("error", "no hero node", true); logDiag("native solve: hero node not found, kept heuristic"); return; }
         // Build the solved-range grid (true GTO) from the hero's decision node.
         let grid = null;
         try {
@@ -656,12 +691,20 @@
           headline: "", source: "solver", bb: base.recommendation.bb,
           detail: req.street.charAt(0).toUpperCase() + req.street.slice(1) + " GTO solve — native TexasSolver, range vs range.",
           top: actions[0], actions: actions, rangeGrid: grid,
-          note: "True solve (native TexasSolver · " + req.street + ") · " + (j.ms ? Math.round(j.ms / 1000) + "s" : "")
+          note: "True solve (native TexasSolver · " + req.street + ") · " + (j.ms ? Math.round(j.ms / 1000) + "s" : ""),
+          solver: { backend: "native-texassolver", status: "ready", detail: req.street },
+          range: req.range || base.recommendation.range
         };
-        state.lastNative = "ok · " + req.street + " · " + (j.ms ? Math.round(j.ms / 1000) + "s" : "?");
+        if (seq === state.nativeStatusSeq) setNativeStatus("solved", req.street + " · " + (j.ms ? Math.round(j.ms / 1000) + "s" : "?"), false);
         state.advice = base; renderAdvice();
       })
-      .catch(function (e) { state.lastNative = "server unreachable"; logDiag("native solve: server unreachable (" + (e && e.message ? e.message : "fetch failed") + ")"); /* keep heuristic baseline */ });
+      .catch(function (e) {
+        if (timer) clearTimeout(timer);
+        if (id !== state.latestSolveId || !els) return;
+        const aborted = e && e.name === "AbortError";
+        if (seq === state.nativeStatusSeq) setNativeStatus(aborted ? "timeout" : "unreachable", aborted ? (req.street + " · " + timeoutMs + "ms") : SOLVER_URL, true);
+        logDiag("native solve: " + (aborted ? "timeout" : "server unreachable") + " (" + (e && e.message ? e.message : "fetch failed") + ")");
+      });
     return true;
   }
 
@@ -792,7 +835,9 @@
       const dkey = (r.source || "") + "|" + (spot.street || "") + "|" + summ;
       if (dkey !== state._lastDiagAdvice) {
         state._lastDiagAdvice = dkey;
+        const solverInfo = r.solver ? " · " + r.solver.backend + "/" + r.solver.status : "";
         logDiag("advice [" + (r.source || "?") + (spot.street ? " " + spot.street : "") + "] " + (summ || "—") +
+          solverInfo +
           (r.exploitabilityPct != null ? " · expl " + r.exploitabilityPct + "%" : ""));
       }
     }
@@ -884,10 +929,15 @@
           return '<button class="tg-dbtn ' + (state.solveDepth === p[0] ? "on" : "") + '" data-depth="' + p[0] + '">' + p[1] + "</button>";
         }).join("") + "</div>";
     }
+    let nativeStatusHtml = "";
+    if (state.nativeSolve) {
+      nativeStatusHtml = '<div class="tg-srcnote ' + nativeStatusClass() + '">Native solver: ' + escapeHtml(nativeStatusText()) + "</div>";
+    }
 
     els.advice.innerHTML =
       '<div class="tengan-adv-head">' + escapeHtml(headline) + toggle + "</div>" +
       depthHtml +
+      nativeStatusHtml +
       (r.detail ? '<div class="tengan-adv-detail">' + escapeHtml(r.detail) + "</div>" : "") +
       mttHtml +
       actionsHtml +
@@ -901,6 +951,8 @@
     const nt = els.advice.querySelector("#tg-native-toggle");
     if (nt) nt.addEventListener("click", function () {
       state.nativeSolve = !state.nativeSolve;
+      if (state.nativeSolve) checkNativeSolver();
+      else setNativeStatus("off", "", false);
       runAdvice(false);
     });
     els.advice.querySelectorAll(".tg-dbtn").forEach(function (b) {
@@ -1401,12 +1453,19 @@
       const acts = (r.actions || []).filter((a) => (a.freq || 0) > 0.004)
         .map((a) => (a.allin ? "all-in" : a.kind) + (a.amount ? " " + a.amount : "") + " " + Math.round((a.freq || 0) * 100) + "%").join(" / ");
       L.push("source=" + (r.source || "?") + "  top=" + (r.top ? ((r.top.allin ? "all-in" : r.top.kind) + " " + Math.round((r.top.freq || 0) * 100) + "%") : "—"));
+      if (r.solver) L.push("solver: " + (r.solver.backend || "?") + " / " + (r.solver.status || "?") + (r.solver.detail ? " / " + r.solver.detail : ""));
       L.push("actions: " + (acts || "—"));
       if (r.note) L.push("note: " + r.note);
       if (r.exploitabilityPct != null) L.push("exploitability: " + r.exploitabilityPct + "%");
+      if (r.range) {
+        L.push("range: hero=" + (r.range.heroRole || "—") + " " + (r.range.heroPosition || "—") + " " + (r.range.heroCombos != null ? r.range.heroCombos : "—") + " combos" +
+          "  villain=" + (r.range.villainRole || "—") + " " + (r.range.villainPosition || "—") + " " + (r.range.villainCombos != null ? r.range.villainCombos : "—") + " combos" +
+          "  potType=" + (r.range.potType || "—") + "  filters=" + ((r.range.filters || []).join(",") || "—"));
+      }
     } else {
       L.push("(none)");
     }
+    L.push("native-solver status: " + nativeStatusText());
     L.push("native-solver last: " + (state.lastNative || (state.nativeSolve ? "(no native solve yet)" : "off")));
     L.push("");
 

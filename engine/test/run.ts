@@ -5,6 +5,7 @@ import { RiverSolver, RiverSpot } from "../src/cfr.js";
 import { cardStr } from "../src/cards.js";
 import { solveCombos, advise } from "../src/advisor.js";
 import { isoAdvice, rangeGrid } from "../src/ranges.js";
+import Engine from "../src/index.js";
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = "") {
@@ -114,6 +115,11 @@ if (betIdx >= 0) {
   check("2-barrel drops middle/bottom pairs", c2.midpair < c0.midpair * 0.5, `mid ${c0.midpair} -> ${c2.midpair}`);
   check("2-barrel keeps value hands", c2.value >= Math.min(c0.value, 4), `value ${c0.value} -> ${c2.value}`);
   check("2-barrel range is smaller (polarized)", c2.n < c0.n, `${c0.n} -> ${c2.n}`);
+
+  const rec = advise(mkSpot(2), {});
+  check("metadata: heuristic fallback labeled", rec.solver?.backend === "heuristic" && rec.solver?.status === "fallback", JSON.stringify(rec.solver));
+  check("metadata: range diagnostics expose roles/counts", !!rec.range && rec.range.heroRole === "caller" && rec.range.villainRole === "aggressor" && rec.range.heroCombos > 0 && rec.range.villainCombos > 0, JSON.stringify(rec.range));
+  check("metadata: range diagnostics record barrel filter", !!rec.range && rec.range.filters.includes("villain:barrel-polarized"), JSON.stringify(rec.range && rec.range.filters));
 }
 
 // ---- 5. Iso-raise over limpers (preflop engine) ----
@@ -149,6 +155,9 @@ if (betIdx >= 0) {
     return { ok: true, street: st, heroCards: hc, board: bd, pot, bb: 2, toCall, effStack: 10, heroStack: heroStk, maxOppStack: maxOpp, heroPosition: "CO", heroIsOOP: true, activePlayers: active, isTournament: false, ante: 0 };
   };
   const act = (sp: any) => advise(sp, {}).actions[0].kind;
+  const rec = advise(mw("AsAh", "Kd7c2s", 6), {});
+  check("metadata: multiway stays approximate equity fallback", rec.solver?.backend === "equity" && rec.solver?.status === "fallback", JSON.stringify(rec.solver));
+  check("metadata: multiway has no solved range diagnostics", !rec.range);
   check("mw: AA overpair value-bets multiway", act(mw("AsAh", "Kd7c2s", 6)) === "bet");
   check("mw: TPTK value-bets 3-way", act(mw("AsKh", "Kd7c2s", 3)) === "bet");
   check("mw: air checks multiway (no bluff)", act(mw("Qd9h", "Kd7c2s", 7)) === "check");
@@ -184,6 +193,37 @@ if (betIdx >= 0) {
   check("grid: AKs blends two combos ~50/50", Math.abs(akCheck - 0.5) < 0.01, `check=${akCheck}`);
   check("grid: AA in range, 72o out of range", find("AA").inRange && !find("72o").inRange);
   check("grid: AA bets (in range, single combo)", (find("AA").options.find((o) => o.action === "bet") || { freq: 0 }).freq > 0.99);
+}
+
+// ---- 8. Native solver request metadata (extension boundary) ----
+{
+  const ST = "cdhs", RK = "23456789TJQKA";
+  const c = (s: string) => RK.indexOf(s[0]) * 4 + ST.indexOf(s[1]);
+  const ids = (s: string) => s.match(/../g)!.map(c);
+  const board = ids("Ks9d4c2h");
+  const hero = ids("AsAh");
+  const gs = {
+    gi: 123,
+    bbv: 2,
+    m: { r: 3 },
+    d: { c: board.join(";"), p: 20 },
+    s: [
+      { dn: "Hero", c: 200, b: 0 },
+      { dn: "Villain", c: 200, b: 0, d: "-1;-1" }
+    ]
+  };
+  const req: any = (Engine as any).solverRequest(gs, { 0: "BB", 1: "BTN" }, {
+    heroSeat: 0,
+    heroCards: hero,
+    heroRole: "caller",
+    villainPos: "BTN",
+    potType: "srp",
+    villainBarrels: 1,
+    nativeCap: 120
+  });
+  check("native request: ok heads-up postflop", req.ok && req.street === "turn", JSON.stringify(req));
+  check("native request: pot/stack in bb", req.pot === 10 && req.effStack === 100, `pot=${req.pot} eff=${req.effStack}`);
+  check("native request: carries range diagnostics", req.range && req.range.filters.includes("villain:barrel-filtered") && req.range.heroCombos > 0 && req.range.villainCombos > 0, JSON.stringify(req.range));
 }
 
 console.log(`\n${failures === 0 ? "ALL TESTS PASSED ✅" : failures + " TEST(S) FAILED ❌"}`);

@@ -5,11 +5,14 @@
 // Always returns the instant math alongside any solver output.
 import { SpotInfo } from "./spot.js";
 import { spotMath, callFracOfPot, potOddsEquity } from "./gtomath.js";
-import { preflopAdvice, isoAdvice, Pos, toChartPos, rangeAtShift, expandRange, GENERIC_CONTINUE, GENERIC_CBET, GENERIC_CALL, THREEBET, THREEBET_CALL, handCode, rangeGrid, RangeGrid } from "./ranges.js";
+import { preflopAdvice, isoAdvice, toChartPos, expandRange, GENERIC_CONTINUE, GENERIC_CBET, rangeGrid, RangeGrid } from "./ranges.js";
 import { rankOf, suitOf, Combo } from "./cards.js";
 import { handCategory, evaluate7 } from "./evaluator.js";
 import { RiverSolver } from "./cfr.js";
 import { TurnSolver } from "./turn.js";
+import { buildPostflopRanges, capRange, ensureCombo, hasStrongDraw, RangeDiagnostics } from "./rangebuilder.js";
+
+export { riverRanges, solveCombos } from "./rangebuilder.js";
 
 // Raw action sizing — the UI formats it as $ or bb (unit toggle).
 export interface ActionRec {
@@ -19,23 +22,6 @@ export interface ActionRec {
   sizeBB?: number;         // bet/raise "to" size in big blinds (preflop chart)
   potFrac?: number;        // bet/raise size as a fraction of pot (flop/turn)
   allin?: boolean;
-}
-
-// Strong draw = flush draw (4 to a suit) or open-ended straight draw.
-function hasStrongDraw(cards: number[]): boolean {
-  const suits = [0, 0, 0, 0];
-  for (const c of cards) suits[suitOf(c)]++;
-  if (suits.some((s) => s === 4)) return true;
-  const rset = new Set(cards.map(rankOf));
-  const ranks = [...rset];
-  if (rset.has(12)) ranks.push(-1); // wheel ace
-  ranks.sort((a, b) => a - b);
-  let run = 1, best = 1;
-  for (let i = 1; i < ranks.length; i++) {
-    if (ranks[i] === ranks[i - 1] + 1) { run++; best = Math.max(best, run); }
-    else if (ranks[i] !== ranks[i - 1]) run = 1;
-  }
-  return best >= 4; // 4-in-a-row = open-ended (made straights handled separately)
 }
 
 export interface Recommendation {
@@ -49,6 +35,12 @@ export interface Recommendation {
   exploitabilityPct?: number;
   note?: string;
   rangeGrid?: RangeGrid;            // postflop: 13x13 solved-range strategy (HU only)
+  solver?: {
+    backend: "chart" | "heuristic" | "engine-cfr" | "native-texassolver" | "equity";
+    status: "ready" | "fallback" | "timeout" | "unreachable" | "error";
+    detail?: string;
+  };
+  range?: RangeDiagnostics;
 }
 
 export function advise(spot: SpotInfo, opts?: { iterations?: number; turnIters?: number; solveTurn?: boolean }): Recommendation {
@@ -89,7 +81,8 @@ export function advise(spot: SpotInfo, opts?: { iterations?: number; turnIters?:
     return {
       headline: "", source: "chart", detail: adv.rationale, bb: spot.bb,
       top: actions[0], actions,
-      note: pushFoldMode ? `MTT push/fold · ${Math.round(stackBB)}bb` : "Preflop chart."
+      note: pushFoldMode ? `MTT push/fold · ${Math.round(stackBB)}bb` : "Preflop chart.",
+      solver: { backend: "chart", status: "ready" }
     };
   }
 
@@ -121,127 +114,6 @@ export function advise(spot: SpotInfo, opts?: { iterations?: number; turnIters?:
   return flopTurnAdvice(spot, math);
 }
 
-// Filter a range to hands that would *continue* (call a bet) on the prior
-// board: a made hand (pair+) or a strong draw. A flop-call range is much
-// stronger than a flop-defend range — this drops the folded-out air.
-function narrowContinue(combos: Combo[], priorBoard: number[]): Combo[] {
-  if (priorBoard.length < 3) return combos;
-  const out = combos.filter((c) => {
-    const all = [c.a, c.b, ...priorBoard];
-    return handCategory(all).cat >= 1 || hasStrongDraw(all);
-  });
-  return out.length >= 8 ? out : combos; // never prune to a degenerate range
-}
-
-// Highest paired rank in a hand (the made pair / set rank), else -1.
-function pairRankOf(cards: number[]): number {
-  const counts = new Array(13).fill(0);
-  for (const c of cards) counts[rankOf(c)]++;
-  let best = -1;
-  for (let r = 0; r < 13; r++) if (counts[r] >= 2) best = r;
-  return best;
-}
-
-// Polarize a range that has *barreled* (bet 2+ streets): keep value (two pair+,
-// top pair / overpair) + strong draws + a balanced slice of air as bluffs, and
-// drop middle/bottom-pair "give-up" hands that would have checked. This makes a
-// double-barrel range correctly stronger/polarized than the flop range.
-function narrowBarrel(combos: Combo[], priorBoard: number[], barrels: number): Combo[] {
-  if (barrels < 2 || priorBoard.length < 3) return combos;
-  const topBoard = Math.max(...priorBoard.map(rankOf));
-  const value: Combo[] = [], draws: Combo[] = [], air: Combo[] = [];
-  for (const c of combos) {
-    const all = [c.a, c.b, ...priorBoard];
-    const cat = handCategory(all).cat;
-    if (cat >= 2 || (cat === 1 && pairRankOf(all) >= topBoard)) value.push(c);  // value + top pair/overpair
-    else if (hasStrongDraw(all)) draws.push(c);                                  // semi-bluff barrels
-    else if (cat === 0) air.push(c);                                             // pure air -> bluff candidate
-    // cat === 1 middle/bottom pair: give-up, dropped
-  }
-  // Keep a balanced bluff slice (~0.8x the value count) so we don't over- or
-  // under-represent bluffs after dropping the give-ups.
-  const bluffN = Math.min(air.length, Math.max(0, Math.round(value.length * 0.8)));
-  const keptAir: Combo[] = [];
-  if (bluffN > 0) {
-    const step = air.length / bluffN;
-    for (let x = 0; x < air.length && keptAir.length < bluffN; x += step) keptAir.push(air[Math.floor(x)]);
-  }
-  const out = value.concat(draws, keptAir);
-  return out.length >= 8 ? out : combos;
-}
-
-// Build hero + villain combo ranges for a postflop spot: position/pot ranges,
-// then narrow by the actual line — caller continue-filter and aggressor barrel
-// polarization. Single source of truth for both in-engine solves and the native
-// request serialization.
-function builtRanges(spot: SpotInfo): { heroR: Combo[]; villR: Combo[] } {
-  const { hero, vill } = riverRanges(spot);
-  const prior = spot.board.slice(0, spot.board.length - 1);
-  let heroR = expandRange(hero, spot.board);
-  let villR = expandRange(vill, spot.board);
-  if (spot.heroContinued) heroR = narrowContinue(heroR, prior);
-  if (spot.villainContinued) villR = narrowContinue(villR, prior);
-  if ((spot.heroBarrels || 0) >= 2) heroR = narrowBarrel(heroR, prior, spot.heroBarrels!);
-  if ((spot.villainBarrels || 0) >= 2) villR = narrowBarrel(villR, prior, spot.villainBarrels!);
-  return { heroR, villR };
-}
-
-// Ensure hero's actual combo is present in a range (so the solver can read it).
-function ensureCombo(combos: Combo[], cards: number[]): Combo[] {
-  const [a, b] = cards;
-  if (combos.some((c) => (c.a === a && c.b === b) || (c.a === b && c.b === a))) return combos;
-  return combos.concat([{ a, b, w: 1 }]);
-}
-
-// Evenly subsample a range to `max` combos (keeping spread), always retaining
-// `keep` (hero's actual combo) so the solve can read it back.
-function capRange(combos: Combo[], max: number, keep?: number[]): Combo[] {
-  if (combos.length <= max) return combos;
-  const out: Combo[] = [];
-  const step = combos.length / max;
-  for (let x = 0; x < combos.length; x += step) out.push(combos[Math.floor(x)]);
-  if (keep && keep.length === 2) {
-    const has = out.some((c) => (c.a === keep[0] && c.b === keep[1]) || (c.a === keep[1] && c.b === keep[0]));
-    if (!has) {
-      const hc = combos.find((c) => (c.a === keep[0] && c.b === keep[1]) || (c.a === keep[1] && c.b === keep[0]));
-      if (hc) out[0] = hc;
-    }
-  }
-  return out;
-}
-
-// Range-builder v2 — construct hero + villain ranges from the actual preflop
-// action: the aggressor's range is the *opening range for their seat* (tight
-// from UTG, wide from the button), and 3-bet pots use much tighter, polarized
-// ranges. Far more accurate than one generic range regardless of who raised
-// from where. The caller holds a wide continuing range.
-export function riverRanges(spot: SpotInfo): { hero: string[]; vill: string[] } {
-  const heroPos = toChartPos(spot.heroPosition || "BTN");
-  const villPos = toChartPos(spot.villainPos || "BTN");
-  const threeBet = spot.potType === "3bet";
-
-  const aggrRange = (pos: Pos): string[] => threeBet ? THREEBET : rangeAtShift(pos, 0);
-  const callRange = (): string[] => threeBet ? THREEBET_CALL : GENERIC_CALL;
-
-  let hero: string[], vill: string[];
-  if (spot.heroRole === "aggressor") { hero = aggrRange(heroPos); vill = callRange(); }
-  else if (spot.heroRole === "caller") { hero = callRange(); vill = aggrRange(villPos); }
-  else { hero = GENERIC_CONTINUE; vill = GENERIC_CONTINUE; }
-
-  const code = handCode(spot.heroCards[0], spot.heroCards[1]);
-  if (!hero.includes(code)) hero = [...hero, code]; // hero's range must contain hero's hand
-  return { hero, vill };
-}
-
-// The final expanded combo ranges for a postflop spot (position/pot ranges +
-// continue-filter), as {oop, ip}. Used both by the in-engine solves and to
-// serialize ranges for the native solve-server so the two agree.
-export function solveCombos(spot: SpotInfo): { oop: Combo[]; ip: Combo[] } {
-  let { heroR, villR } = builtRanges(spot);
-  heroR = ensureCombo(heroR, spot.heroCards);
-  return spot.heroIsOOP ? { oop: heroR, ip: villR } : { oop: villR, ip: heroR };
-}
-
 /// Build the 13x13 solved-range grid from a CFR root strategy (all combos).
 function gridFromRoot(rs: { actions: { kind: string; amount: number; allin?: boolean }[]; perCombo: { combo: { a: number; b: number }; freqs: number[] }[] }): RangeGrid {
   const kinds = rs.actions.map((a) => (a.allin ? "allin" : a.kind));
@@ -255,7 +127,7 @@ function solveRiverRVR(spot: SpotInfo, iterations: number): Recommendation {
   const heroIsOOP = spot.heroIsOOP;
   const heroPlayer: 0 | 1 = heroIsOOP ? 0 : 1;
   const RIVER_CAP = 220;
-  const built = builtRanges(spot); // position/pot ranges + continue & barrel narrowing
+  const built = buildPostflopRanges(spot); // position/pot ranges + continue & barrel narrowing
   const heroRange = ensureCombo(capRange(built.heroR, RIVER_CAP, spot.heroCards), spot.heroCards);
   const villRange = capRange(built.villR, RIVER_CAP);
   const toCall = spot.toCall;
@@ -293,7 +165,9 @@ function solveRiverRVR(spot: SpotInfo, iterations: number): Recommendation {
     top: actions[0], actions,
     exploitabilityPct: +exploitabilityPct.toFixed(2),
     rangeGrid: gridFromRoot(rs),
-    note: `True CFR solve · exploitability ${exploitabilityPct.toFixed(1)}%`
+    note: `True CFR solve · exploitability ${exploitabilityPct.toFixed(1)}%`,
+    solver: { backend: "engine-cfr", status: "ready", detail: "river" },
+    range: built.diagnostics
   };
 }
 
@@ -305,7 +179,7 @@ function solveTurnRVR(spot: SpotInfo, iterations: number): Recommendation {
   // pure JS off-thread (~9-11s at 130). Full ranges (~185) would be ~20s — that
   // needs river-card isomorphism (the optimization TexasSolver uses) to speed up.
   const CAP = 130;
-  const built = builtRanges(spot); // position/pot ranges + continue & barrel narrowing
+  const built = buildPostflopRanges(spot); // position/pot ranges + continue & barrel narrowing
   const heroRange = ensureCombo(capRange(built.heroR, CAP, spot.heroCards), spot.heroCards);
   const villRange = capRange(built.villR, CAP);
   const toCall = spot.toCall;
@@ -342,7 +216,9 @@ function solveTurnRVR(spot: SpotInfo, iterations: number): Recommendation {
     top: actions[0], actions,
     exploitabilityPct: +exploitabilityPct.toFixed(2),
     rangeGrid: gridFromRoot(rs),
-    note: `True CFR solve (turn+river) · exploit ${exploitabilityPct.toFixed(1)}%`
+    note: `True CFR solve (turn+river) · exploit ${exploitabilityPct.toFixed(1)}%`,
+    solver: { backend: "engine-cfr", status: "ready", detail: "turn+river" },
+    range: built.diagnostics
   };
 }
 
@@ -468,6 +344,7 @@ function flopTurnAdvice(spot: SpotInfo, math: ReturnType<typeof spotMath>): Reco
   const spr = pot > 0 ? commitStk / pot : 10;
   const lowSPR = spr <= 4;
   const role = spot.heroRole;                    // 'aggressor' | 'caller' | undefined
+  const headsUpRange = (spot.activePlayers || 2) <= 2 ? buildPostflopRanges(spot).diagnostics : undefined;
 
   const eff = heroStk;                           // hero physically can't bet beyond this
   const cap = (a: ActionRec): ActionRec => {
@@ -534,7 +411,8 @@ function flopTurnAdvice(spot: SpotInfo, math: ReturnType<typeof spotMath>): Reco
     }
     return {
       headline: "", source: "equity", detail, bb, top, actions, math,
-      note: `Multiway (${wayN}-way) — equity vs ${nOpp} opponents (approximate, not a solve)`
+      note: `Multiway (${wayN}-way) — equity vs ${nOpp} opponents (approximate, not a solve)`,
+      solver: { backend: "equity", status: "fallback", detail: "multiway approximate" }
     };
   }
 
@@ -609,5 +487,9 @@ function flopTurnAdvice(spot: SpotInfo, math: ReturnType<typeof spotMath>): Reco
   const note = spot.activePlayers > 2
     ? `Multiway (${spot.activePlayers}-way) — approximate (heuristic, not a solve)`
     : (isRiver ? "Heuristic (river solve unavailable)" : "Heuristic (flop/turn — not a full solve)");
-  return { headline: "", source: "equity", detail, bb, top, actions, math, note };
+  return {
+    headline: "", source: "equity", detail, bb, top, actions, math, note,
+    solver: { backend: "heuristic", status: "fallback", detail: isRiver ? "river solve unavailable" : "heads-up postflop heuristic" },
+    range: headsUpRange
+  };
 }

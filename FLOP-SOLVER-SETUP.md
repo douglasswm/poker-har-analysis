@@ -9,8 +9,9 @@ the flop (and can also serve turn/river at full depth if you prefer).
 > real TexasSolver binary, and the HUD client is implemented (the "solver" toggle
 > in the advice panel). Enable the toggle and run the server below; flop spots
 > then show a true native solve, falling back to the in-engine heuristic if the
-> server is unreachable. (Only the browser→localhost transport on your Mac is
-> outside what we could test in the build sandbox.)
+> server is unreachable or times out. The panel reports native status
+> (`checking`, `ready`, `solving`, `solved`, `timeout`, `unreachable`, `error`)
+> and the diagnostics export includes the range assumptions used.
 
 ---
 
@@ -85,15 +86,17 @@ multi-size tree produces real mixed sizing.
 Implemented in `bridge.js` + the engine:
 
 - `manifest.json` grants `host_permissions: ["http://127.0.0.1:7333/*"]`.
-- The advice panel has a **"solver" toggle**. Turn it on to route flop spots to
-  the native solve-server.
-- Flow: on a **heads-up, flop, checked-to-hero** spot, the HUD shows the
+- The advice panel has a **"solver" toggle**. Turn it on to route heads-up
+  postflop spots to the native solve-server.
+- Flow: on a **heads-up postflop** spot, the HUD shows the
   in-engine heuristic instantly, then `POST /solve` and **upgrades** the panel to
   the native solve when it returns (badge: "True solve (native TexasSolver ·
-  flop) · Ns"). If the server is unreachable it silently keeps the heuristic.
+  flop) · Ns"). If the server is unreachable or times out it keeps the fallback.
 - `TenganEngine.solverRequest(gs, positions, opts)` builds the board + both
   ranges from the same position/pot-type/continue-filter range-builder the
-  in-engine solver uses, so native and in-engine agree on ranges.
+  in-engine solver uses, so native and in-engine agree on ranges. The request
+  also carries range diagnostics: roles, positions, pot type, combo counts, and
+  filters such as `villain:continued` or `villain:barrel-polarized`.
 - `extractNative()` reads the hero's combo strategy out of the returned tree
   (root for OOP first-to-act; `childrens.CHECK` for IP checked-to).
 
@@ -128,6 +131,10 @@ preset trades speed for sharpness (iterations + accuracy + range combo cap + the
 | Fast | 40 | 1.0 | 250 | flop 50 / turn 66 / river 75 (+ allin) |
 | Normal | 80 | 0.5 | 400 | flop 33·75 / turn 66 / river 50·100 (+ allin) |
 | Deep | 200 | 0.25 | 700 | flop 33·75·125 + donk 33 / turn 50·100 + raise / river 33·75·125 (+ allin) |
+
+The HUD aborts native requests by preset if they exceed the live budget:
+Fast 8s, Normal 25s, Deep 60s. Timeout is a status, not a hard failure; the
+instant fallback recommendation remains visible.
 
 Richer trees give finer sizing (the solver mixes across sizes — e.g. bet 33% vs
 75% with different hands) at the cost of a wider tree and more solve time. Thread

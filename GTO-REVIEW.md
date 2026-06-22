@@ -111,27 +111,26 @@ the villain is, which the old single-generic-range engine couldn't do.
 - **Turn = true two-street GTO** off-thread, trustworthy exploitability metric.
 - **Preflop chart + ante-aware MTT push/fold**, position-stable.
 - **Off-thread solving** (no UI freeze) + synchronous fallback.
-- **Transparency:** every recommendation shows a source badge — green
-  "True CFR solve · exploitability X%", amber "Multiway — approximate" /
-  "Heuristic" — so you always know which engine produced the advice.
+- **Native postflop path** is wired through the solver toggle for heads-up flop,
+  turn, and river, with in-engine fallback if the server is unreachable or times
+  out.
+- **Transparency:** every recommendation carries solver backend/status metadata
+  plus range diagnostics for heads-up postflop assumptions.
 - **Multiway is honestly flagged** rather than solved with a wrong HU model.
 
 ---
 
 ## 5. Remaining gaps / levers (per-opponent reads intentionally excluded)
 
-1. **Flop HUD wiring (last mile).** The solve-server is built and tested; the
-   browser→localhost `fetch` in `bridge.js` is documented but not yet wired
-   (needs the user's running server to verify). Flop currently uses the heuristic.
-2. **Aggressor postflop narrowing.** The continue-filter narrows the *caller*;
-   the *aggressor's* range isn't yet narrowed for multi-barrels (a double-barrel
-   range should drop give-up hands and polarize). Caller side done, aggressor side pending.
-3. **Turn precision / speed.** ~2% exploitable (more iterations would tighten);
+1. **Native runtime dependency.** Full-depth flop/turn/river solves need the
+   local solve-server. The HUD reports `checking`, `ready`, `solving`, `solved`,
+   `timeout`, `unreachable`, or `error` and keeps the in-engine fallback.
+2. **Turn precision / speed.** ~2% exploitable (more iterations would tighten);
    one bet size + all-in on the turn tree (river has two); river-card isomorphism
    would let the turn use full ranges (board-dependent payoff, flop groundwork).
-4. **Multiway** stays a flagged heuristic — true multiway solving is out of scope
+3. **Multiway** stays a flagged heuristic — true multiway solving is out of scope
    (TexasSolver is heads-up too).
-5. **Range realism.** Ranges assume textbook opening/continuing; against real
+4. **Range realism.** Ranges assume textbook opening/continuing; against real
    recreational opponents the assumed ranges, not the last few % of GTO
    precision, are the main limiter. (Per-opponent exploit ranges are deliberately
    left out of scope.)
@@ -141,9 +140,11 @@ the villain is, which the old single-generic-range engine couldn't do.
 ## 6. Honesty / caveats
 
 - A solve is only as good as the **ranges** fed to it; the builder conditions on
-  position, pot type, and the call/continue line, but not on per-opponent reads.
+  position, pot type, call/continue lines, and aggressor barrels, but not on
+  per-opponent reads.
 - The turn is **bounded** (cap 130 combos, ~70 iters) for live latency — lifting
   that toward full ranges needs river-card isomorphism or the native server.
-- The flop is **not yet a live solve in the HUD** — it's the heuristic until the
-  solve-server client is wired (see `FLOP-SOLVER-SETUP.md`).
-- River/turn are **heads-up**; multiway falls back to the heuristic with a flag.
+- Native flop/turn/river solves are opt-in and depend on the local server; the
+  fallback remains instant and explicitly labeled.
+- Heads-up postflop can be solved; multiway falls back to the heuristic with a
+  flag.

@@ -146,11 +146,12 @@ capped to the stack. Preflop, short stacks (≤20bb) get shove recommendations.
 Click **⚡** to get a read on the current spot:
 
 - **Preflop** — instant 6-max chart lookup (raise/call/fold + size).
-- **Flop / turn** — instant GTO **math**: pot odds, MDF, α, optimal bluff share,
-  SPR. (Multi-street live solving is intentionally out of scope — too slow.)
-- **River** — a real **Discounted-CFR solve** of hero's spot vs a generic
-  villain range, returning action frequencies (check / bet sizes / fold / call /
-  raise) and the solved exploitability.
+- **Flop** — instant range-aware heuristic, upgraded to native TexasSolver when
+  the local solve-server is enabled and reachable.
+- **Turn** — off-thread two-street Discounted-CFR in-engine, or native
+  TexasSolver when the solver toggle is on.
+- **River** — off-thread Discounted-CFR in-engine, or native TexasSolver when
+  enabled, returning action frequencies and solved exploitability.
 
 The engine is verified: `cd engine && npm test` checks the hand evaluator, the
 GTO-math formulas, and CFR convergence (a polarized river converges to ~2% of
@@ -175,11 +176,13 @@ from this root folder.
 
 ### Honest limitations of the advisor
 
-- The solver needs **both players' ranges**; with no read it uses a *generic*
-  continuing range for villain and your exact hand for hero. Treat outputs as
-  GTO-flavoured guidance, not ground truth.
-- River solves run on the page thread for a fraction of a second; **turn/flop are
-  math-only** because a full multi-street solve can't finish in time live.
+- The solver needs **both players' ranges**; range diagnostics in the HUD show
+  the position, pot type, combo counts, and action filters used. Treat outputs as
+  GTO for assumed ranges, not ground truth.
+- Native postflop solves require the local solve-server. If it is off,
+  unreachable, or times out, the HUD keeps the instant in-engine fallback and
+  labels the source/status.
+- Multiway pots are heuristic/equity-based, not true GTO solves.
 - This is the opposite of solver-exact products like PioSOLVER/GTO Wizard — it's
   a compact, transparent re-implementation for research.
 
