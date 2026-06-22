@@ -30,3 +30,7 @@
   the extension's runtime server alive. When the user needs the HUD connected
   now, explicitly start `npm run solver:start` and verify the long-running
   listener remains on `127.0.0.1:7333`.
+- Native solver toggled on is only permission to dispatch; it is not proof that
+  a solve is running. Confirm actual solving with `/solve` request logs and the
+  HUD's last advice: native dispatch currently requires an advice trigger plus a
+  heads-up flop/turn/river spot.

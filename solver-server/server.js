@@ -21,6 +21,39 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 
+const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SERVER_DIR, "..");
+const LOG_PATH = process.env.TENGAN_SOLVER_LOG || path.join(REPO_ROOT, "logs", "solver-server.log");
+let requestSeq = 0;
+
+function countRangeCombos(range) {
+  return String(range || "").split(",").map((s) => s.trim()).filter(Boolean).length;
+}
+
+function logEvent(event, fields = {}) {
+  const suffix = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(" ");
+  const line = `${new Date().toISOString()} ${event}${suffix ? " " + suffix : ""}`;
+  console.log(line);
+  try {
+    fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+    fs.appendFileSync(LOG_PATH, line + "\n");
+  } catch (e) {}
+}
+
+function rootActionCount(out) {
+  if (Array.isArray(out?.actions)) return out.actions.length;
+  if (out?.childrens && typeof out.childrens === "object") return Object.keys(out.childrens).length;
+  return 0;
+}
+
+function strategyComboCount(out) {
+  const strat = out?.strategy?.strategy;
+  return strat && typeof strat === "object" ? Object.keys(strat).length : 0;
+}
+
 function resolveBin(bin, env = process.env) {
   const isWasm = /\.(c?js|mjs)$/.test(bin);
   const mode = isWasm ? fs.constants.R_OK : fs.constants.X_OK;
@@ -167,12 +200,27 @@ export function createServer(config = makeConfig()) {
     return;
   }
   if (rq.method === "POST" && rq.url === "/solve") {
+    const requestId = ++requestSeq;
     let body = "";
     rq.on("data", (c) => { body += c; if (body.length > 1e6) rq.destroy(); });
     rq.on("end", () => {
-      let req; try { req = JSON.parse(body); } catch (e) { rs.writeHead(400); rs.end('{"error":"bad json"}'); return; }
+      let req; try { req = JSON.parse(body); } catch (e) {
+        logEvent(`POST /solve #${requestId} 400`, { error: "bad json" });
+        rs.writeHead(400); rs.end('{"error":"bad json"}'); return;
+      }
+      logEvent(`POST /solve #${requestId} start`, {
+        board: req.board,
+        pot: req.pot,
+        effStack: req.effStack,
+        oopCombos: countRangeCombos(req.oopRange),
+        ipCombos: countRangeCombos(req.ipRange),
+        maxIter: req.maxIter,
+        accuracy: req.accuracy,
+        threads: req.threads
+      });
       const health = solverHealth(config);
       if (!health.ok) {
+        logEvent(`POST /solve #${requestId} 503`, { error: health.error });
         rs.writeHead(503, { "Content-Type": "application/json" });
         rs.end(JSON.stringify({ error: health.error, hint: health.hint, bin: health.bin, cwd: health.cwd }));
         return;
@@ -180,9 +228,16 @@ export function createServer(config = makeConfig()) {
       const t0 = Date.now();
       try {
         const out = solve(req, config);
+        const ms = Date.now() - t0;
+        logEvent(`POST /solve #${requestId} 200`, {
+          ms,
+          rootActions: rootActionCount(out),
+          strategyCombos: strategyComboCount(out)
+        });
         rs.writeHead(200, { "Content-Type": "application/json" });
-        rs.end(JSON.stringify({ ms: Date.now() - t0, strategy: out }));
+        rs.end(JSON.stringify({ ms, strategy: out }));
       } catch (e) {
+        logEvent(`POST /solve #${requestId} 500`, { ms: Date.now() - t0, error: String((e && e.message) || e) });
         rs.writeHead(500, { "Content-Type": "application/json" });
         rs.end(JSON.stringify({ error: String((e && e.message) || e) }));
       }
@@ -199,6 +254,7 @@ function start() {
   server.listen(config.port, "127.0.0.1", () => {
     const health = solverHealth(config);
     console.log(`Tengan solve-server on http://127.0.0.1:${config.port}  (bin: ${config.bin}, cwd: ${config.cwd})`);
+    console.log(`Request log: ${LOG_PATH}`);
     if (!health.ok) console.log(`Solver not ready: ${health.error}${health.hint ? " — " + health.hint : ""}`);
   });
 }
