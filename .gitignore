@@ -11,6 +11,9 @@ build/
 *.log
 .DS_Store
 
+# Local native solver config
+.solver.env
+
 # Generated test/parity runner bundles (esbuild output)
 engine/test/.run.bundle.cjs
 engine/test/.parity.bundle.cjs

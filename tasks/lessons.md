@@ -8,3 +8,6 @@
   server process. A port can be reachable while `console_solver` or `resources/`
   is missing, so health checks and HUD status need separate "server not running"
   and "backend misconfigured" states.
+- User-facing native-solver setup must be a remembered command plus local config,
+  not a long inline env-var command. If a feature needs machine-local paths, add
+  a gitignored config file, an example, and a start script that validates it.

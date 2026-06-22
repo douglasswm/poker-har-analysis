@@ -1,4 +1,7 @@
-const url = process.env.TENGAN_SOLVER_URL || "http://127.0.0.1:7333";
+import { buildSolverEnv } from "./solver-env.mjs";
+
+const solverEnv = buildSolverEnv();
+const url = process.env.TENGAN_SOLVER_URL || `http://127.0.0.1:${solverEnv.TENGAN_SOLVER_PORT || "7333"}`;
 
 function fail(msg) {
   console.error(msg);

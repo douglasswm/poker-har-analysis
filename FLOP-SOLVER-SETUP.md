@@ -33,8 +33,8 @@ folder containing `console_solver` and a `resources/` directory. (Or build the
 From this repo:
 
 ```bash
-TENGAN_SOLVER_BIN=/path/to/TexasSolver/console_solver \
-TENGAN_SOLVER_CWD=/path/to/TexasSolver \
+cp .solver.env.example .solver.env
+# edit .solver.env once with your TexasSolver paths
 npm run solver
 # -> Tengan solve-server on http://127.0.0.1:7333
 ```
@@ -43,7 +43,7 @@ npm run solver
 - `TENGAN_SOLVER_CWD` — the install dir that contains `resources/` (defaults to the binary's dir).
 - `TENGAN_SOLVER_PORT` — default `7333`.
 
-Health check: `npm run solver:check` → `native solver ready: ...`.
+Health check from another terminal: `npm run solver:check` → `native solver ready: ...`.
 The health endpoint now validates both the executable and the `resources/`
 directory, so a running server with a missing backend reports a configuration
 error instead of pretending to be ready.

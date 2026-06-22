@@ -1,28 +1,25 @@
-# Native Solver and Postflop HUD Visibility Bug
+# Native Solver Start Script
 
 ## Plan
 
-- [x] Confirm current worktree, task notes, and lessons.
-- [x] Build a repro loop for `Native solver: unreachable`.
-- [x] Diagnose server startup, solver binary configuration, URL, and HUD fallback paths.
-- [x] Implement native-solver health preflight and postflop fallback visibility fixes.
-- [x] Update `tasks/lessons.md` with the correction pattern.
-- [x] Run focused native-solver health checks plus repo verification.
+- [x] Confirm current worktree, package scripts, ignore rules, and lessons.
+- [x] Add a one-command native solver start script with local config loading.
+- [x] Add an example config and ignore the user's real local config.
+- [x] Update docs to use the start script instead of raw env-var commands.
+- [x] Update `tasks/lessons.md` for the correction pattern.
+- [x] Verify missing-config, fake-backend ready, full tests, typecheck, and build.
 - [x] Document review results.
 
 ## Review
 
-- Reproduced the original symptom: `npm run solver:check` fails with
-  `native solver unreachable: server not running · http://127.0.0.1:7333`
-  when nothing listens on port 7333.
-- Confirmed the old server could falsely report `ok:true` while `/solve` failed
-  with `spawnSync console_solver ENOENT`.
-- Added solver-server readiness checks for executable and `resources/`, plus
-  `npm run solver` and `npm run solver:check`.
-- Updated the HUD native path so an unreachable native server does not suppress
-  the normal in-engine postflop worker solve.
-- Verified with focused tests: `node test/solver-server.test.js` and
-  `node test/bridge-native-fallback.test.js`.
-- Verified localhost states: unreachable, backend-misconfigured, and ready with a
-  disposable fake backend.
+- Added `.solver.env.example` and ignored `.solver.env` for machine-local
+  TexasSolver paths.
+- Added `scripts/start-solver.mjs` and `scripts/solver-env.mjs`; `npm run solver`
+  and `npm start` now load local config, validate it, then start the server.
+- Kept the raw server available as `npm run solver:server`.
+- Updated `npm run solver:check` to follow `.solver.env` port settings.
+- Verified missing config fails with a clear setup message.
+- Verified fake-backend config with `npm run solver:start -- --check`.
+- Verified actual `npm run solver` starts localhost `7333` with a disposable fake
+  backend and `npm run solver:check` reports ready.
 - Full `npm test`, `npm run typecheck`, and `npm run build` pass.

@@ -63,7 +63,7 @@ the `.js` — it detects the extension and runs it via node:
 ```bash
 TENGAN_SOLVER_BIN="<src>/build-wasm/console_solver.js" \
 TENGAN_SOLVER_CWD="<src>" \
-node solver-server/server.js
+npm run solver
 ```
 
 The HUD ("solver" toggle) and `npm run parity -- --live` then work unchanged — and

@@ -165,7 +165,7 @@ npm run dev        # watch: rebuilds src/engine.bundle.js on every TS change
 npm run build      # one-off production bundle
 npm test           # engine CFR/math/evaluator tests + parser HAR test
 npm run typecheck  # tsc --noEmit
-npm run solver     # local native TexasSolver HTTP server
+npm run solver     # local native TexasSolver HTTP server, reads .solver.env
 npm run solver:check
 ```
 
@@ -175,6 +175,10 @@ a rebuild, hit **Reload** on the extension in `chrome://extensions`.
 Source layout: `engine/` holds the TypeScript source; `src/` is the loadable
 extension (content scripts + the built `engine.bundle.js`). You only run npm
 from this root folder.
+
+For native postflop solves, set up `.solver.env` once from
+`.solver.env.example`, then run `npm run solver` before using the HUD's solver
+toggle.
 
 ### Honest limitations of the advisor
 
