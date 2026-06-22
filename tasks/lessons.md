@@ -11,3 +11,10 @@
 - User-facing native-solver setup must be a remembered command plus local config,
   not a long inline env-var command. If a feature needs machine-local paths, add
   a gitignored config file, an example, and a start script that validates it.
+- When giving setup commands for dotfiles, call out the exact filename and avoid
+  notation that can be mistaken for part of the path. A trailing `~` creates a
+  different filename, so `.solver.env` and `.solver.env~` are not interchangeable.
+- Fake backends are acceptable only as isolated test fixtures, and the final
+  user-facing native-solver setup must clearly bind to a real TexasSolver binary.
+  Explain test doubles explicitly before using them so they are not mistaken for
+  production wiring.

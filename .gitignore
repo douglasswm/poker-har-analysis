@@ -13,6 +13,7 @@ build/
 
 # Local native solver config
 .solver.env
+.solver-bin/
 
 # Generated test/parity runner bundles (esbuild output)
 engine/test/.run.bundle.cjs

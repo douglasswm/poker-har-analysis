@@ -23,18 +23,27 @@ the flop (and can also serve turn/river at full depth if you prefer).
 
 ## 1. Install TexasSolver
 
-Download the macOS release from
-<https://github.com/bupticybee/TexasSolver/releases>, unzip it. You'll get a
-folder containing `console_solver` and a `resources/` directory. (Or build the
-`console` branch from source: CMake + a C++17 compiler + OpenMP.)
+On macOS, run:
+
+```bash
+npm run solver:install
+```
+
+That downloads the official `bupticybee/TexasSolver` macOS release, extracts it
+under the ignored `.solver-bin/` directory, and writes `.solver.env` with the
+real `console_solver` and `resources/` paths.
+
+Manual alternative: download the release from
+<https://github.com/bupticybee/TexasSolver/releases>, unzip it, then edit
+`.solver.env`. You'll need the folder containing `console_solver` and
+`resources/`. (Or build the `console` branch from source: CMake + a C++17
+compiler + OpenMP.)
 
 ## 2. Run the solve-server
 
 From this repo:
 
 ```bash
-cp .solver.env.example .solver.env
-# edit .solver.env once with your TexasSolver paths
 npm run solver
 # -> Tengan solve-server on http://127.0.0.1:7333
 ```

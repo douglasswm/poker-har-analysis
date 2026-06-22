@@ -14,6 +14,7 @@
     "solver:start": "node scripts/start-solver.mjs",
     "solver:server": "node solver-server/server.js",
     "solver:check": "node scripts/check-solver-server.mjs",
+    "solver:install": "node scripts/install-solver.mjs",
     "typecheck": "tsc -p engine/tsconfig.json --noEmit"
   },
   "devDependencies": {
