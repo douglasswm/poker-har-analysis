@@ -1,28 +1,24 @@
-# Folded Players Counted As Multiway Bug
+# Native Solver Unreachable Runtime Check
 
 ## Plan
 
-- [x] Confirm current worktree and relevant task notes.
-- [x] Build a regression where folded seats must not count as active postflop opponents.
-- [x] Diagnose whether fold state is lost in parser, bridge, spot builder, or advisor.
-- [x] Fix the smallest boundary that can distinguish folded from live seats.
-- [x] Update `tasks/lessons.md` with the correction pattern.
-- [x] Run focused regression, full tests, typecheck, build, and relevant native verifier.
+- [x] Reproduce the extension status by checking whether anything listens on
+  `127.0.0.1:7333`.
+- [x] Validate `.solver.env` and the real TexasSolver binary path.
+- [x] Start the native solver server through the project start script.
+- [x] Verify `/health` and HUD-displayable native solve output.
 - [x] Document review results.
 
 ## Review
 
-- Root cause: `engine/src/spot.ts` used the raw seat-state `s` field as a fold
-  marker while the parser and live frames mark folds with `la === 1`.
-- Fix: added one fold predicate in `buildSpot` and reused it for active-player
-  counts, current max-bet scans, opponent stack scans, and preflop limper scans.
-- Regression: a nine-seat postflop frame with seven `la: 1` folded seats failed
-  before the fix with `active=9` and `solver.detail="multiway approximate"`;
-  after the fix it passes with `active=2` and heads-up postflop advice.
-- Rebuilt `src/engine.bundle.js` and `src/engine.worker.js` so the extension HUD
-  loads the corrected engine.
-- Verification passed: focused engine test, full `npm test`, `npm run typecheck`,
-  `npm run build`, and `npm run solver:verify-hud`.
-- Native HUD verifier output included displayable actions and `HUD native range
-  grid: 169 cells`.
-- No solver process was left listening on `127.0.0.1:7333`.
+- Reproduced the exact status: no process was listening on
+  `127.0.0.1:7333`, so the extension's `Native solver: unreachable` message
+  was accurate.
+- `.solver.env` is valid and points to the installed real TexasSolver binary at
+  `.solver-bin/TexasSolver-v0.2.0-MacOs/console_solver`.
+- Started the native solver server with `npm run solver:start`.
+- `npm run solver:check` passed with `native solver ready: native ·
+  http://127.0.0.1:7333`.
+- `npm run solver:verify-hud` passed and returned HUD-displayable native output:
+  `BET $0.06 (3.0BB) (50%)`, strategy rows, `True solve (native TexasSolver ·
+  flop)`, and a 169-cell range grid.

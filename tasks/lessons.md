@@ -26,3 +26,7 @@
   the seat-state `s` field. Active-player counts, limper detection, stack scans,
   and bet scans need one shared fold predicate so folded seats cannot force a
   false multiway fallback.
+- Native-solver verification can prove the real backend works without leaving
+  the extension's runtime server alive. When the user needs the HUD connected
+  now, explicitly start `npm run solver:start` and verify the long-running
+  listener remains on `127.0.0.1:7333`.
