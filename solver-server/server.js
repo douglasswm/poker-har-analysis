@@ -13,16 +13,87 @@
 //                tree?: { flop|turn|river: { bet:[%], raise:[%], donk:[%], allin } },
 //                flopBet?, turnBet?, riverBet?  (legacy single-size fallback) }
 //   -> the dumped strategy JSON (root = OOP's first action).
-// GET  /        -> { ok: true } health check.
+// GET  /        -> readiness health check.
 import http from "http";
 import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const BIN = process.env.TENGAN_SOLVER_BIN || "console_solver";
-const CWD = process.env.TENGAN_SOLVER_CWD || path.dirname(BIN);
-const PORT = parseInt(process.env.TENGAN_SOLVER_PORT || "7333", 10);
+function resolveBin(bin, env = process.env) {
+  const isWasm = /\.(c?js|mjs)$/.test(bin);
+  const mode = isWasm ? fs.constants.R_OK : fs.constants.X_OK;
+  const tryAccess = (p) => {
+    try {
+      fs.accessSync(p, mode);
+      return p;
+    } catch (e) {
+      return null;
+    }
+  };
+  if (bin.includes("/") || bin.includes(path.sep)) return tryAccess(path.resolve(bin));
+  for (const dir of String(env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    const found = tryAccess(path.join(dir, bin));
+    if (found) return found;
+  }
+  return null;
+}
+
+export function makeConfig(env = process.env) {
+  const bin = env.TENGAN_SOLVER_BIN || "console_solver";
+  const resolvedBin = resolveBin(bin, env);
+  const cwd = env.TENGAN_SOLVER_CWD || path.dirname(resolvedBin || bin);
+  return {
+    bin,
+    resolvedBin,
+    cwd,
+    port: parseInt(env.TENGAN_SOLVER_PORT || "7333", 10),
+    binIsWasm: /\.(c?js|mjs)$/.test(bin)
+  };
+}
+
+export function solverHealth(config = makeConfig()) {
+  if (!config.resolvedBin) {
+    return {
+      ok: false,
+      bin: config.bin,
+      cwd: config.cwd,
+      error: `solver binary not found: ${config.bin}`,
+      hint: "Set TENGAN_SOLVER_BIN to TexasSolver console_solver, or build wasm/console_solver.js."
+    };
+  }
+  try {
+    fs.accessSync(config.cwd, fs.constants.R_OK);
+  } catch (e) {
+    return {
+      ok: false,
+      bin: config.resolvedBin,
+      cwd: config.cwd,
+      error: `solver cwd not readable: ${config.cwd}`,
+      hint: "Set TENGAN_SOLVER_CWD to the TexasSolver install directory."
+    };
+  }
+  const resources = path.join(config.cwd, "resources");
+  try {
+    fs.accessSync(resources, fs.constants.R_OK);
+  } catch (e) {
+    return {
+      ok: false,
+      bin: config.resolvedBin,
+      cwd: config.cwd,
+      error: `solver resources not found: ${resources}`,
+      hint: "Set TENGAN_SOLVER_CWD to the directory that contains resources/."
+    };
+  }
+  return {
+    ok: true,
+    bin: config.resolvedBin,
+    cwd: config.cwd,
+    backend: config.binIsWasm ? "wasm" : "native"
+  };
+}
 
 // Emit set_bet_sizes lines for one player/street from a spec
 // { bet:[..], raise:[..], donk:[..], allin:bool }. Sizes are % of pot.
@@ -67,36 +138,48 @@ function buildConfig(req, dumpPath) {
   return L.join("\n") + "\n";
 }
 
-// A .js/.mjs/.cjs BIN is a WebAssembly build (Emscripten) — run it via node so the
-// wasm solver is a drop-in backend (no native binary). Otherwise exec BIN directly.
-const BIN_IS_WASM = /\.(c?js|mjs)$/.test(BIN);
-
-function solve(req) {
+function solve(req, config = makeConfig()) {
+  const health = solverHealth(config);
+  if (!health.ok) {
+    throw new Error(health.error + (health.hint ? ". " + health.hint : ""));
+  }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tengan-solve-"));
   const cfgPath = path.join(tmp, "in.txt");
   const dumpPath = path.join(tmp, "out.json");
   fs.writeFileSync(cfgPath, buildConfig(req, dumpPath));
-  const exe = BIN_IS_WASM ? process.execPath : BIN;
-  const argv = BIN_IS_WASM ? [BIN, "-i", cfgPath] : ["-i", cfgPath];
-  execFileSync(exe, argv, { cwd: CWD, stdio: "ignore", timeout: (req.timeoutMs || 60000) });
+  const exe = config.binIsWasm ? process.execPath : config.resolvedBin;
+  const argv = config.binIsWasm ? [config.resolvedBin, "-i", cfgPath] : ["-i", cfgPath];
+  execFileSync(exe, argv, { cwd: config.cwd, stdio: "ignore", timeout: (req.timeoutMs || 60000) });
   const out = JSON.parse(fs.readFileSync(dumpPath, "utf8"));
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
   return out;
 }
 
-const server = http.createServer((rq, rs) => {
+export function createServer(config = makeConfig()) {
+  return http.createServer((rq, rs) => {
   rs.setHeader("Access-Control-Allow-Origin", "*");
   rs.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (rq.method === "OPTIONS") { rs.writeHead(204); rs.end(); return; }
-  if (rq.method === "GET") { rs.writeHead(200, { "Content-Type": "application/json" }); rs.end(JSON.stringify({ ok: true, bin: BIN })); return; }
+  if (rq.method === "GET") {
+    const health = solverHealth(config);
+    rs.writeHead(health.ok ? 200 : 503, { "Content-Type": "application/json" });
+    rs.end(JSON.stringify(health));
+    return;
+  }
   if (rq.method === "POST" && rq.url === "/solve") {
     let body = "";
     rq.on("data", (c) => { body += c; if (body.length > 1e6) rq.destroy(); });
     rq.on("end", () => {
       let req; try { req = JSON.parse(body); } catch (e) { rs.writeHead(400); rs.end('{"error":"bad json"}'); return; }
+      const health = solverHealth(config);
+      if (!health.ok) {
+        rs.writeHead(503, { "Content-Type": "application/json" });
+        rs.end(JSON.stringify({ error: health.error, hint: health.hint, bin: health.bin, cwd: health.cwd }));
+        return;
+      }
       const t0 = Date.now();
       try {
-        const out = solve(req);
+        const out = solve(req, config);
         rs.writeHead(200, { "Content-Type": "application/json" });
         rs.end(JSON.stringify({ ms: Date.now() - t0, strategy: out }));
       } catch (e) {
@@ -107,8 +190,17 @@ const server = http.createServer((rq, rs) => {
     return;
   }
   rs.writeHead(404); rs.end();
-});
+  });
+}
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Tengan solve-server on http://127.0.0.1:${PORT}  (bin: ${BIN}, cwd: ${CWD})`);
-});
+function start() {
+  const config = makeConfig();
+  const server = createServer(config);
+  server.listen(config.port, "127.0.0.1", () => {
+    const health = solverHealth(config);
+    console.log(`Tengan solve-server on http://127.0.0.1:${config.port}  (bin: ${config.bin}, cwd: ${config.cwd})`);
+    if (!health.ok) console.log(`Solver not ready: ${health.error}${health.hint ? " — " + health.hint : ""}`);
+  });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) start();

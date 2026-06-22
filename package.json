@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "node scripts/build.mjs --watch",
     "build": "node scripts/build.mjs",
-    "test": "node scripts/test.mjs && node test/parser.test.js && node scripts/parity.mjs",
+    "test": "node scripts/test.mjs && node test/parser.test.js && node test/solver-server.test.js && node test/bridge-native-fallback.test.js && node scripts/parity.mjs",
     "parity": "node scripts/parity.mjs",
     "parity:gen": "node scripts/parity.mjs --gen",
+    "solver": "node solver-server/server.js",
+    "solver:check": "node scripts/check-solver-server.mjs",
     "typecheck": "tsc -p engine/tsconfig.json --noEmit"
   },
   "devDependencies": {

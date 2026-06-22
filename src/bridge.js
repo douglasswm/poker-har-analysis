@@ -117,6 +117,7 @@
     nativeStatus: "off",       // off | checking | ready | unreachable | error | solving | solved | timeout
     nativeStatusDetail: "",
     nativeStatusSeq: 0,
+    nativeSolvedId: null,
     _frontSeen: false,         // logged the first 'front' frame yet?
     _lastDiagAdvice: null      // dedupe key for advice diag lines
   };
@@ -497,6 +498,7 @@
     const d = (ev && ev.data) || {};
     if (d.id !== state.latestSolveId) return;   // a newer request superseded this
     state.solveInFlight = null;
+    if (state.nativeSolvedId === d.id) return;  // native beat the fallback worker
     if (!els) return;
     if (d.error) {
       if (!state.advice) els.advice.innerHTML = '<div class="tengan-empty">Engine error: ' + escapeHtml(String(d.error)) + "</div>";
@@ -538,8 +540,18 @@
     const seq = ++state.nativeStatusSeq;
     setNativeStatus("checking", "health", true);
     fetch(SOLVER_URL + "/")
-      .then(function (r) { if (seq !== state.nativeStatusSeq || state.nativeStatus === "solving") return; setNativeStatus(r.ok ? "ready" : "error", r.ok ? SOLVER_URL : "health " + r.status, true); })
-      .catch(function () { if (seq !== state.nativeStatusSeq || state.nativeStatus === "solving") return; setNativeStatus("unreachable", SOLVER_URL, true); });
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) { return { res: r, body: j || {} }; });
+      })
+      .then(function (out) {
+        if (seq !== state.nativeStatusSeq || state.nativeStatus === "solving" || !out) return;
+        if (out.res.ok && out.body.ok !== false) {
+          setNativeStatus("ready", (out.body.backend ? out.body.backend + " · " : "") + SOLVER_URL, true);
+        } else {
+          setNativeStatus("error", out.body.error || ("health " + out.res.status), true);
+        }
+      })
+      .catch(function () { if (seq !== state.nativeStatusSeq || state.nativeStatus === "solving") return; setNativeStatus("unreachable", "server not running · " + SOLVER_URL, true); });
   }
 
   // Bet-tree richness per depth preset (sizes are % of pot). More sizes = sharper
@@ -687,7 +699,12 @@
       .then(function (j) {
         if (timer) clearTimeout(timer);
         if (id !== state.latestSolveId || !els) return;
-        if (j.error) { if (seq === state.nativeStatusSeq) setNativeStatus("error", j.error, true); logDiag("native solve error: " + j.error); return; } // keep heuristic
+        if (j.error) {
+          const detail = j.error + (j.hint ? " · " + j.hint : "");
+          if (seq === state.nativeStatusSeq) setNativeStatus("error", detail, true);
+          logDiag("native solve error: " + detail);
+          return;
+        } // keep heuristic
         const actions = extractNative(j.strategy, req);
         if (!actions || !actions.length) { if (seq === state.nativeStatusSeq) setNativeStatus("error", "no hero node", true); logDiag("native solve: hero node not found, kept heuristic"); return; }
         // Build the solved-range grid (true GTO) from the hero's decision node.
@@ -704,6 +721,7 @@
           solver: { backend: "native-texassolver", status: "ready", detail: req.street },
           range: req.range || base.recommendation.range
         };
+        state.nativeSolvedId = id;
         if (seq === state.nativeStatusSeq) setNativeStatus("solved", req.street + " · " + (j.ms ? Math.round(j.ms / 1000) + "s" : "?"), false);
         state.advice = base; renderAdvice();
       })
@@ -711,7 +729,7 @@
         if (timer) clearTimeout(timer);
         if (id !== state.latestSolveId || !els) return;
         const aborted = e && e.name === "AbortError";
-        if (seq === state.nativeStatusSeq) setNativeStatus(aborted ? "timeout" : "unreachable", aborted ? (req.street + " · " + timeoutMs + "ms") : SOLVER_URL, true);
+        if (seq === state.nativeStatusSeq) setNativeStatus(aborted ? "timeout" : "unreachable", aborted ? (req.street + " · " + timeoutMs + "ms") : ("server not running · " + SOLVER_URL), true);
         logDiag("native solve: " + (aborted ? "timeout" : "server unreachable") + " (" + (e && e.message ? e.message : "fetch failed") + ")");
       });
     return true;
@@ -790,16 +808,19 @@
     const id = ++state.solveSeq;
     state.latestSolveId = id;
     const positions = positionsMap();
+    let nativeDispatched = false;
 
     // Native TexasSolver path: full-depth solve for any heads-up postflop spot
-    // (flop/turn/river, checked-to or facing a bet). Falls back inside on error.
+    // (flop/turn/river, checked-to or facing a bet). Keep the in-engine worker
+    // fallback running too, so an unreachable native server never hides the
+    // normal postflop solve from the HUD.
     if (state.nativeSolve && window.TenganEngine.solverRequest) {
       opts.nativeCap = depthCfg().cap;
       let req = null;
       try { req = window.TenganEngine.solverRequest(gs, positions, opts); } catch (e) {}
       if (req && req.ok && (req.street === "flop" || req.street === "turn" || req.street === "river")) {
         req.streetActions = streetActionSeq(req);   // for deep within-street tree navigation
-        if (dispatchNative(req, gs, positions, opts, id)) return;
+        nativeDispatched = dispatchNative(req, gs, positions, opts, id);
       }
     }
 
@@ -809,13 +830,13 @@
       if (state.solveInFlight) w = restartWorker();  // cancel a stale in-flight solve
       if (w) {
         state.solveInFlight = id;
-        if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
+        if (!auto && !nativeDispatched) els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
         try { w.postMessage({ id: id, gs: gs, positions: positions, opts: opts }); return; }
         catch (e) { state.workerFailed = true; state.worker = null; }
       }
     }
     // Synchronous fallback (no worker): keep turn on the fast heuristic.
-    if (!auto) els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
+    if (!auto && !nativeDispatched) els.advice.innerHTML = '<div class="tengan-empty">Solving…</div>';
     setTimeout(function () {
       if (id !== state.latestSolveId) return;
       try { state.advice = window.TenganEngine.recommend(gs, positions, opts); renderAdvice(); }

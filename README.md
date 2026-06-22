@@ -165,6 +165,8 @@ npm run dev        # watch: rebuilds src/engine.bundle.js on every TS change
 npm run build      # one-off production bundle
 npm test           # engine CFR/math/evaluator tests + parser HAR test
 npm run typecheck  # tsc --noEmit
+npm run solver     # local native TexasSolver HTTP server
+npm run solver:check
 ```
 
 `npm run dev` watches `engine/src/*.ts` and writes `src/engine.bundle.js`. After
@@ -181,7 +183,8 @@ from this root folder.
   GTO for assumed ranges, not ground truth.
 - Native postflop solves require the local solve-server. If it is off,
   unreachable, or times out, the HUD keeps the instant in-engine fallback and
-  labels the source/status.
+  labels the source/status. Run `npm run solver:check` to distinguish "server
+  not running" from a missing `console_solver`/`resources/` configuration.
 - Multiway pots are heuristic/equity-based, not true GTO solves.
 - This is the opposite of solver-exact products like PioSOLVER/GTO Wizard — it's
   a compact, transparent re-implementation for research.

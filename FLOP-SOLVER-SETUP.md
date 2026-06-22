@@ -35,7 +35,7 @@ From this repo:
 ```bash
 TENGAN_SOLVER_BIN=/path/to/TexasSolver/console_solver \
 TENGAN_SOLVER_CWD=/path/to/TexasSolver \
-node solver-server/server.js
+npm run solver
 # -> Tengan solve-server on http://127.0.0.1:7333
 ```
 
@@ -43,7 +43,10 @@ node solver-server/server.js
 - `TENGAN_SOLVER_CWD` — the install dir that contains `resources/` (defaults to the binary's dir).
 - `TENGAN_SOLVER_PORT` — default `7333`.
 
-Health check: `curl http://127.0.0.1:7333/` → `{"ok":true,...}`.
+Health check: `npm run solver:check` → `native solver ready: ...`.
+The health endpoint now validates both the executable and the `resources/`
+directory, so a running server with a missing backend reports a configuration
+error instead of pretending to be ready.
 
 ## 3. Request protocol
 
